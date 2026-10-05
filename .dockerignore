@@ -1,0 +1,49 @@
+# Keep the image to what actually runs. `Dockerfile`'s `COPY . .` otherwise
+# bakes in whatever happens to be sitting in the build directory — and since
+# the build context is the PROJECT DIRECTORY ON THE PI, that meant the live
+# database, every `workout.db.bak-*` snapshot, the Garmin credentials and the
+# cached OAuth tokens were all being copied into an image layer. The runtime
+# bind mount hid them, so nothing ever broke; they were just quietly there.
+#
+# db.js:8 mkdir -p's `data/` on boot, so excluding it here is safe whether or
+# not the bind mount is present.
+
+# Runtime data + secrets — provided by the bind mount, never by the image
+data/
+# The RepDB library is downloaded into data/repdb/ at runtime; a copy still
+# sitting in public/repdb/ from the days it was vendored must not be baked in.
+public/repdb/
+.env
+*.env
+
+# OMV-generated compose files. Not read at runtime (docker reads them from
+# the host), and they carry an "auto-generated, do not edit" banner.
+compose.yml
+compose.override.yml
+workout-tracker.yml
+
+# Built inside the image by `RUN npm install` — a host copy would clobber the
+# native better-sqlite3 build with one compiled for a different arch.
+node_modules/
+npm-debug.log*
+
+__pycache__/
+*.pyc
+
+# Docs and test harnesses. Nothing at runtime imports them; browser-test alone
+# is ~9MB of node_modules plus an unbounded screenshot directory.
+*.md
+# `*.md` alone matches the ROOT only (Go filepath.Match, not gitignore rules),
+# so a nested Markdown file would ship without this.
+**/*.md
+testing/
+unused/
+scripts/
+
+# Not needed inside the image it builds
+Dockerfile
+.dockerignore
+docker-compose.yml
+.git/
+.gitignore
+.claude/

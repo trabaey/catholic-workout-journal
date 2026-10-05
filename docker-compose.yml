@@ -1,0 +1,22 @@
+services:
+  workout-tracker:
+    build: .
+    container_name: workout-tracker
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Every date in this app means the LOCAL calendar day, and a container
+      # defaults to UTC — see the Dockerfile's ENV TZ for the full reasoning and
+      # the four server-side write paths it protects.
+      #
+      # The DOCKERFILE is the load-bearing copy of this, not this file. OMV
+      # generates and owns workout-tracker.yml in production and will overwrite
+      # it from the GUI, so anything set only here can vanish on a rebuild. This
+      # is here for local `docker compose up` and so the value is visible where
+      # people look for it. Set TZ in your shell or a .env beside this file to
+      # your own zone (e.g. TZ=Europe/London); the default is the original
+      # install's.
+      - TZ=${TZ:-America/Chicago}
+    volumes:
+      - ./data:/app/data

@@ -1,0 +1,21 @@
+# Python runtime deps for garmin_sync.py, fully pinned (direct AND transitive)
+# for the reason package-lock.json exists: rebuild-to-deploy is the only
+# deployment path, so an unpinned install floats to whatever PyPI has that day.
+# garminconnect is the one that bites. Its auth internals change between
+# releases, and an unannounced one is how token caching broke before
+# (DECISIONS.md#garmin-tokenstore-pattern).
+#
+# These are exactly what the working image had on 2026-09-26 (pip3 freeze in
+# the container). setuptools/packaging/pyparsing are left out because they
+# come from Alpine's py3-pip. To upgrade: bump garminconnect here, build, run a
+# real sync, then re-freeze the container and update this list from it.
+garminconnect==0.3.10
+requests==2.34.2
+curl_cffi==0.16.0
+cffi==2.1.1
+pycparser==3.0
+ua-generator==2.1.3
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.18
+urllib3==2.7.0
