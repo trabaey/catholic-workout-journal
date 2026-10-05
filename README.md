@@ -1,9 +1,11 @@
-# Workout Tracker
+# Catholic Workout Journal
 
 A self-hosted workout journal for a household: lifting routines with PRs and
 progressive-overload tips, cardio and other activities, daily check-ins
 (sleep, energy, soreness), injuries, goals, analytics, a calendar and a route
-map. One small Node.js server with a SQLite database and a single-page web app.
+map. Every day also carries its place in the Church's liturgical year (the
+feast, the season and the week), shown above that day's journal. One small
+Node.js server with a SQLite database and a single-page web app.
 It runs in Docker, comfortably on a Raspberry Pi, and works well as an
 "Add to Home Screen" app on a phone.
 

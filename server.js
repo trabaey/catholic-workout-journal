@@ -3961,7 +3961,7 @@ app.get('/api/activity-weather', (req, res) => {
 // ── Start ──────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Workout Tracker running on http://0.0.0.0:${PORT}`);
+  console.log(`Catholic Workout Journal running on http://0.0.0.0:${PORT}`);
   logTiming('server started'); // so a deploy/restart is visible in the timing log
   warmLiturgicalCache();
   fillActivityWeather();

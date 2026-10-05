@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 garmin_sync.py — fetch recent Garmin Connect activities, sleep scores and
-daily recovery data, and sync them into Workout Tracker.
+daily recovery data, and sync them into Catholic Workout Journal.
 
 Run on the Pi, inside the container:
   sudo docker exec workout-tracker python3 garmin_sync.py [--user-id N]
@@ -1844,7 +1844,7 @@ if __name__ == '__main__':
     # header AFTER the subprocess output it introduces, so one sync read as two.
     sys.stdout.reconfigure(line_buffering=True)
 
-    parser = argparse.ArgumentParser(description='Sync Garmin Connect activities into Workout Tracker.')
+    parser = argparse.ArgumentParser(description='Sync Garmin Connect activities into Catholic Workout Journal.')
     parser.add_argument('--mfa-code', dest='mfa_code', default=None,
                          help='Garmin MFA code (for non-interactive use, e.g. triggered from the browser)')
     parser.add_argument('--user-id', dest='user_id', type=int, default=1,
