@@ -2732,6 +2732,29 @@ function findManualCandidates(date, type, userId) {
     .all(date, type, userId).map(_rowToHistoryEntry);
 }
 
+// The SYNCED activity of this user's starting closest to `timestamp`, within
+// windowMs, other than `excludeExternalId` itself; null if none. Garmin ids are
+// all digits (see getRoutelessActivityIds), anything else came from Apple.
+// Two reasons one workout reaches the app under a second id: Garmin Connect
+// writes every Garmin activity into Apple Health, and an Apple workout can
+// arrive from the Shortcut (HealthKit's UUID) and again from a Health export
+// (no UUID there, so an applex- id). Manual rows are not looked at:
+// syncActivitiesForUser's merge rules own those.
+//
+// `secs` is the row's duration in seconds (0 when it has none), for callers
+// that also compare lengths.
+function findSyncedActivityNear(userId, timestamp, windowMs, excludeExternalId = null) {
+  const row = db.prepare(`SELECT id, external_id, data FROM history
+    WHERE user_id = ? AND external_id IS NOT NULL AND external_id <> '' AND external_id <> ?
+      AND timestamp BETWEEN ? AND ?
+    ORDER BY ABS(timestamp - ?) LIMIT 1`)
+    .get(userId, excludeExternalId ?? '', timestamp - windowMs, timestamp + windowMs, timestamp);
+  if (!row) return null;
+  let secs = 0;
+  try { secs = durationSec(JSON.parse(row.data || '{}').duration); } catch { /* unreadable data: no length */ }
+  return { id: row.id, external_id: row.external_id, garmin: /^[0-9]+$/.test(row.external_id), secs };
+}
+
 // Every synced entry for the user, for scanning existing history for
 // duplicate pairs.
 function getGarminHistory(userId) {
@@ -4013,4 +4036,4 @@ function closeDatabase() {
   db.close();
 }
 
-module.exports = { transaction, closeDatabase, durationSec, NAME_KEYED_EXERCISE_TABLES, isoDateStr, normalizeDateStr, getDataYearSpan, getUsers, userExists, createUser, updateUser, restoreUser, getLifts, setLifts, getExerciseDefaults, setExerciseDefaults, seedExerciseDefaultsFromRoutines, getAllExerciseNames, getSchedule, setScheduleDay, getPlans, setPlanDay, getHistory, addHistory, updateHistory, refreshDeviceFields, addDeviceFieldsToManual, deleteHistory, clearHistory, historyBelongsToUser, getBodyWeight, addBodyWeight, deleteBodyWeight, hasExternalId, getCheckins, getCheckin, upsertCheckin, deleteCheckin, GARMIN_DAILY_COLUMNS, getGarminDaily, getGarminDailyDay, upsertGarminDaily, restoreGarminDaily, NON_ROUTE_TYPES, getActivityRoutes, getActivityRouteWithProfile, getRoutelessActivityIds, markRoutesMissing, getActivityRoute, upsertActivityRoute, restoreActivityRoute, ACTIVITY_WEATHER_COLUMNS, getActivityWeather, getWeatherlessActivities, upsertActivityWeather, settleActivityWeather, getRouteSegments, getRouteSegment, routeSegmentNameTaken, createRouteSegment, updateRouteSegment, deleteRouteSegment, restoreRouteSegment, getRoutines, createRoutine, updateRoutine, archiveRoutine, getExerciseCategoryOverrides, setExerciseCategoryOverride, getExerciseFormNotes, setExerciseFormNote, getExerciseWeightless, setExerciseWeightless, getExerciseMuscles, setExerciseMuscles, getExercisePatterns, setExercisePattern, getExerciseTimed, setExerciseTimed, getExerciseUnranked, setExerciseUnranked, mergeExerciseNames, getActivityTypes, ensureActivityType, createActivityType, updateActivityType, restoreActivityType, findManualCandidates, getGarminHistory, findLikelyDuplicate, backupDatabase, getGarminSyncStatus, setGarminSyncStatus, clearGarminSyncStatus, getAppleSyncStatus, setAppleSyncStatus, clearAppleSyncStatus, getBackupStatus, setBackupStatus, getGoals, getGoal, createGoal, updateGoal, deleteGoal, restoreGoal, clearGoals, getInjuries, createInjury, updateInjury, deleteInjury, restoreInjury, clearInjuries, relinkInjuries, unlinkInjuriesFromHistory, getInjuryCheckins, getInjuryCheckin, upsertInjuryCheckin, restoreInjuryCheckin, getPregnancyInfo, setPregnancyInfo, restorePregnancyInfo, getPregnancyMilestones, createPregnancyMilestone, updatePregnancyMilestone, deletePregnancyMilestone, restorePregnancyMilestone, clearPregnancyMilestones, getLifePhases, getLifePhase, createLifePhase, updateLifePhase, deleteLifePhase, restoreLifePhase, CUSTOM_FLAG_PREFIX, getCheckinFlagPrefs, getCheckinFlagPref, getCustomCheckinFlags, createCustomCheckinFlag, updateCustomCheckinFlag, moveCustomCheckinFlag, setBuiltinCheckinFlagHidden, deleteCheckinFlagPref, checkinFlagUseCount, restoreCheckinFlagPref };
+module.exports = { transaction, closeDatabase, durationSec, NAME_KEYED_EXERCISE_TABLES, isoDateStr, normalizeDateStr, getDataYearSpan, getUsers, userExists, createUser, updateUser, restoreUser, getLifts, setLifts, getExerciseDefaults, setExerciseDefaults, seedExerciseDefaultsFromRoutines, getAllExerciseNames, getSchedule, setScheduleDay, getPlans, setPlanDay, getHistory, addHistory, updateHistory, refreshDeviceFields, addDeviceFieldsToManual, deleteHistory, clearHistory, historyBelongsToUser, getBodyWeight, addBodyWeight, deleteBodyWeight, hasExternalId, getCheckins, getCheckin, upsertCheckin, deleteCheckin, GARMIN_DAILY_COLUMNS, getGarminDaily, getGarminDailyDay, upsertGarminDaily, restoreGarminDaily, NON_ROUTE_TYPES, getActivityRoutes, getActivityRouteWithProfile, getRoutelessActivityIds, markRoutesMissing, getActivityRoute, upsertActivityRoute, restoreActivityRoute, ACTIVITY_WEATHER_COLUMNS, getActivityWeather, getWeatherlessActivities, upsertActivityWeather, settleActivityWeather, getRouteSegments, getRouteSegment, routeSegmentNameTaken, createRouteSegment, updateRouteSegment, deleteRouteSegment, restoreRouteSegment, getRoutines, createRoutine, updateRoutine, archiveRoutine, getExerciseCategoryOverrides, setExerciseCategoryOverride, getExerciseFormNotes, setExerciseFormNote, getExerciseWeightless, setExerciseWeightless, getExerciseMuscles, setExerciseMuscles, getExercisePatterns, setExercisePattern, getExerciseTimed, setExerciseTimed, getExerciseUnranked, setExerciseUnranked, mergeExerciseNames, getActivityTypes, ensureActivityType, createActivityType, updateActivityType, restoreActivityType, findManualCandidates, findSyncedActivityNear, getGarminHistory, findLikelyDuplicate, backupDatabase, getGarminSyncStatus, setGarminSyncStatus, clearGarminSyncStatus, getAppleSyncStatus, setAppleSyncStatus, clearAppleSyncStatus, getBackupStatus, setBackupStatus, getGoals, getGoal, createGoal, updateGoal, deleteGoal, restoreGoal, clearGoals, getInjuries, createInjury, updateInjury, deleteInjury, restoreInjury, clearInjuries, relinkInjuries, unlinkInjuriesFromHistory, getInjuryCheckins, getInjuryCheckin, upsertInjuryCheckin, restoreInjuryCheckin, getPregnancyInfo, setPregnancyInfo, restorePregnancyInfo, getPregnancyMilestones, createPregnancyMilestone, updatePregnancyMilestone, deletePregnancyMilestone, restorePregnancyMilestone, clearPregnancyMilestones, getLifePhases, getLifePhase, createLifePhase, updateLifePhase, deleteLifePhase, restoreLifePhase, CUSTOM_FLAG_PREFIX, getCheckinFlagPrefs, getCheckinFlagPref, getCustomCheckinFlags, createCustomCheckinFlag, updateCustomCheckinFlag, moveCustomCheckinFlag, setBuiltinCheckinFlagHidden, deleteCheckinFlagPref, checkinFlagUseCount, restoreCheckinFlagPref };

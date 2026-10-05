@@ -1571,6 +1571,27 @@ app.get('/api/activity-routes/:externalId', (req, res) => {
 // in activity_route_misses so the ?wanted=1 queue stops offering them. Garmin
 // ids only, the same all-digits rule the queue applies, and checked as a whole
 // before anything is written: it is part of the envelope.
+// Validates and stores one route; returns the validation error, or null once
+// stored. The one writer of activity_routes from a sync: this route's POST
+// (garmin_sync.py) and the Apple Health export import both go through it.
+function storeActivityRoute(route, userId) {
+  const err = validateRouteFields(route);
+  if (err) return err;
+  const pts = decodePolyline(route.polyline);
+  db.upsertActivityRoute({
+    external_id: route.external_id,
+    polyline: route.polyline,
+    point_count: pts.length,
+    bounds: boundsOf(pts),
+    fetched_at: Date.now(),
+    breaks: Array.isArray(route.breaks) ? route.breaks : null,
+    times: Array.isArray(route.times) ? route.times : null,
+    elev: Array.isArray(route.elev) ? route.elev : null,
+    hr: Array.isArray(route.hr) ? route.hr : null,
+  }, userId);
+  return null;
+}
+
 app.post('/api/activity-routes', (req, res) => {
   try {
     const userId = getUserId(req);
@@ -1583,23 +1604,11 @@ app.post('/api/activity-routes', (req, res) => {
     let stored = 0;
     const rejected = [];
     for (const route of routes) {
-      const err = validateRouteFields(route);
+      const err = storeActivityRoute(route, userId);
       if (err) {
         rejected.push({ external_id: route && route.external_id, error: err });
         continue;
       }
-      const pts = decodePolyline(route.polyline);
-      db.upsertActivityRoute({
-        external_id: route.external_id,
-        polyline: route.polyline,
-        point_count: pts.length,
-        bounds: boundsOf(pts),
-        fetched_at: Date.now(),
-        breaks: Array.isArray(route.breaks) ? route.breaks : null,
-        times: Array.isArray(route.times) ? route.times : null,
-        elev: Array.isArray(route.elev) ? route.elev : null,
-        hr: Array.isArray(route.hr) ? route.hr : null,
-      }, userId);
       stored++;
     }
     // A new route is a new place and time to look up. Not awaited: the sync
@@ -3270,34 +3279,382 @@ app.post('/api/garmin/sync', (req, res) => {
 // PUT /api/apple-health/credentials baked into that user's Shortcut URL; an
 // unknown or revoked token 401s and never falls back to a default user.
 //
-// Deliberately minimal until a real Shortcut round-trips: { activities:
-// [{ type, date, timestamp, duration, calories, external_id }] }, no sleep or
-// weight. `external_id` must be stable per workout (a HealthKit UUID, or a
-// synthesized `type+start-time`) — dedup depends on it.
+// Two body shapes. `{ activities: [...] }` is already in history's shape (the
+// harnesses use it). `{ workouts: ... }` is what the real Shortcut sends: the
+// free Actions app's "Find Workout" (stock Shortcuts cannot read workouts at
+// all), each workout put through a Dictionary and the Repeat Results posted as
+// one JSON field. iOS coerces that list to TEXT, one JSON object per line, and
+// every value to a display string: "Oct 2, 2026 at 4:20 PM", "6,391.42 m",
+// "2,302.386 sec". appleWorkoutToActivity() reads exactly that, and arrays
+// or ISO dates too. Story: DECISIONS.md#apple-health-sync.
 //
 // This POST is the whole sync, so the route records its own outcome via
 // setAppleSyncStatus (Garmin's script POSTs its outcome separately).
-app.post('/api/apple-health/sync', (req, res) => {
+//
+// Every authenticated push is also kept, LAST ONE ONLY, as
+// data/apple-last-payload-{userId}.txt: what a Shortcut sends depends on how
+// iOS serializes a third-party action's output, which nothing on this side can
+// see, so the raw body is the only way to debug a Shortcut that "ran fine".
+// Workout data, not a credential. Any content type is accepted for the same
+// reason.
+const APPLE_PAYLOAD_KEEP_BYTES = 2 * 1024 * 1024;
+function keepApplePayload(userId, req) {
+  try {
+    const text = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body, null, 2);
+    const head = `received ${new Date().toISOString()} content-type ${req.get('content-type') || '(none)'}\n`;
+    writeFileAtomic(path.join(DATA_DIR, `apple-last-payload-${userId}.txt`),
+      head + (text.length > APPLE_PAYLOAD_KEEP_BYTES ? text.slice(0, APPLE_PAYLOAD_KEEP_BYTES) + '\n[truncated]' : text));
+  } catch (e) { console.error('keepApplePayload', e.message); }
+}
+
+// Apple's workout names for the app types that already exist; the same
+// curated set as garmin_sync.py's TYPE_MAP. Anything else becomes its own
+// type by slug ("Paddle Sports" -> paddle_sports) and gets the usual
+// "categorize this" prompt.
+const APPLE_TYPE_MAP = {
+  'running': 'run', 'walking': 'walk', 'hiking': 'hike', 'cycling': 'bike',
+  'traditional strength training': 'lift', 'functional strength training': 'lift',
+  'climbing': 'climb',
+};
+// A synced activity starting this close to an Apple workout is the same one
+// under a second id (db.findSyncedActivityNear says how that happens). The
+// Shortcut's display string drops the seconds, so a minute either side plus
+// slack.
+const APPLE_SAME_WORKOUT_WINDOW_MS = 2 * 60 * 1000;
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+// -> { ms, date } or null. An ISO string with an offset is a true instant.
+// The display form ("Oct 2, 2026 at 4:20 PM", iOS puts a U+202F before PM)
+// carries no zone, so it is read in the server's TZ, which is home: the DATE
+// is always the phone's own calendar day, the timestamp is off by the zone
+// difference only for a workout recorded while travelling.
+function parseAppleDate(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/[  ]/g, ' ').trim();
+  let d = null, date = null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})T/.exec(s);
+  const shown = /^([A-Za-z]{3})[a-z]*\.? (\d{1,2}), (\d{4})(?:,| at) (\d{1,2}):(\d{2})(?::(\d{2}))? ?([AaPp][Mm])?$/.exec(s);
+  if (iso) {
+    d = new Date(s);
+    date = `${iso[1]}-${iso[2]}-${iso[3]}`;
+  } else if (shown) {
+    const mon = MONTHS.indexOf(shown[1].toLowerCase());
+    if (mon < 0) return null;
+    let h = +shown[4];
+    if (shown[7]) h = (h % 12) + (/p/i.test(shown[7]) ? 12 : 0);
+    d = new Date(+shown[3], mon, +shown[2], h, +shown[5], +(shown[6] || 0));
+    date = `${shown[3]}-${String(mon + 1).padStart(2, '0')}-${shown[2].padStart(2, '0')}`;
+  }
+  return d && Number.isFinite(d.getTime()) ? { ms: d.getTime(), date } : null;
+}
+// "6,391.42 m" -> { n: 6391.42, unit: 'm' }. en-US separators only (a comma
+// is a thousands separator), which is what the phones here produce.
+function parseAppleQty(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? { n: v, unit: '' } : null;
+  if (typeof v !== 'string') return null;
+  const m = /^\s*(-?[\d,]*\.?\d+)\s*([A-Za-z]*)/.exec(v.replace(/[  ]/g, ' '));
+  if (!m) return null;
+  const n = parseFloat(m[1].replace(/,/g, ''));
+  return Number.isFinite(n) ? { n, unit: m[2].toLowerCase() } : null;
+}
+function appleSeconds(v) {
+  const q = parseAppleQty(v);
+  if (!q) return null;
+  if (/^(h|hr|hrs|hour|hours)$/.test(q.unit)) return q.n * 3600;
+  if (/^(m|min|mins|minute|minutes)$/.test(q.unit)) return q.n * 60;
+  return q.n; // sec, s, or a bare number
+}
+function appleMetres(v) {
+  const q = parseAppleQty(v);
+  if (!q) return null;
+  const per = { '': 1, m: 1, km: 1000, mi: 1609.344, ft: 0.3048, yd: 0.9144 }[q.unit];
+  return per ? q.n * per : null;
+}
+// Same shapes as garmin_sync.py's fmt_duration / fmt_pace, so an Apple row
+// reads like a Garmin one everywhere.
+function fmtSyncedDuration(sec) {
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+function fmtSyncedPace(metres, sec) {
+  if (!metres || !sec || metres < 100) return '';
+  const per = Math.round(sec / (metres / 1000));
+  return `${Math.floor(per / 60)}:${String(per % 60).padStart(2, '0')} /km`;
+}
+// `workouts` as sent: text with one JSON object per line, a JSON array as
+// text, or a real array of objects or of JSON strings.
+function appleWorkoutItems(workouts) {
+  const parseOne = x => { if (typeof x !== 'string') return x; try { return JSON.parse(x); } catch { return null; } };
+  if (Array.isArray(workouts)) return workouts.map(parseOne);
+  if (workouts && typeof workouts === 'object') return [workouts];
+  if (typeof workouts !== 'string') return [];
+  const whole = parseOne(workouts.trim());
+  if (Array.isArray(whole)) return whole.map(parseOne);
+  if (whole && typeof whole === 'object') return [whole];
+  return workouts.split(/\r?\n/).filter(l => l.trim()).map(parseOne);
+}
+// One Apple workout, from either path, -> a history record, or null when it
+// lacks an id, a type or a readable start (counted, never guessed).
+function appleWorkoutToActivity(w) {
+  const id = typeof w?.id === 'string' ? w.id.trim() : '';
+  const appleType = typeof w?.type === 'string' ? w.type.trim() : '';
+  const start = parseAppleDate(w?.start);
+  if (!id || !appleType || !start) return null;
+  const type = APPLE_TYPE_MAP[appleType.toLowerCase()]
+    || appleType.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  if (!type) return null;
+  let sec = appleSeconds(w.duration);
+  const end = parseAppleDate(w.end);
+  if (!(sec > 0) && end && end.ms > start.ms) sec = (end.ms - start.ms) / 1000;
+  const metres = appleMetres(w.distance);
+  const cal = parseAppleQty(w.calories);
+  const hr = parseAppleQty(w.avgheartrate);
+
+  const record = { timestamp: start.ms, date: start.date, type, name: appleType, external_id: id, source: 'apple' };
+  if (sec > 0) record.duration = fmtSyncedDuration(sec);
+  if (cal && cal.n >= 0) record.calories = Math.round(cal.n);
+  if (type !== 'lift' && type !== 'climb') {
+    if (metres > 0) record.distance = Math.round(metres / 10) / 100;
+    if (type !== 'bike') { const pace = fmtSyncedPace(metres, sec); if (pace) record.pace = pace; }
+    if (hr && hr.n > 0) record.avgHR = Math.round(hr.n);
+  } else if (type === 'lift') {
+    record.lift = null;
+  }
+  return record;
+}
+
+// Sorts Apple workouts before import. `fresh` go to syncActivitiesForUser.
+// `known` are already in the app under another APPLE id; `item` rides along
+// so the export can still attach a route to the row that is there.
+// garminCopies are dropped outright, routes included: the Garmin row has its
+// own.
+//
+// `twins` are the same outing twice WITHIN this batch: two apps (the watch's
+// Workout app and, say, a hiking app) each wrote it into Health, so it comes
+// out twice, seconds apart. One is kept: the one with a route, else the
+// longer.
+//
+// Between two APPLE workouts, "the same" means the same start AND about the
+// same length (APPLE_SAME_LENGTH_TOLERANCE). Two recordings that began
+// together but ran 20 minutes apart are kept as two: that is the user's call
+// on real pairs, since only one of them can be wrong and nothing here knows
+// which. A Garmin copy is matched on time alone; its length is Garmin's own.
+const APPLE_SAME_LENGTH_TOLERANCE = 0.1;
+// Lengths in seconds; an unknown one (0) can't tell two apart, so it matches.
+function sameAppleLength(a, b) {
+  if (!(a > 0) || !(b > 0)) return true;
+  return Math.abs(a - b) <= APPLE_SAME_LENGTH_TOLERANCE * Math.max(a, b);
+}
+function sortAppleWorkouts(items, userId) {
+  const fresh = [], known = [];
+  let rejected = 0, garminCopies = 0, twins = 0;
+  const parsed = [];
+  for (const item of items) {
+    const record = appleWorkoutToActivity(item);
+    if (record) parsed.push({ item, record });
+    else rejected++;
+  }
+  parsed.sort((a, b) => a.record.timestamp - b.record.timestamp);
+  const rank = p => [p.item?.route ? 1 : 0, appleSeconds(p.item?.duration) || 0];
+  const better = (a, b) => { const [ra, da] = rank(a), [rb, db] = rank(b); return ra !== rb ? ra > rb : da > db; };
+  const kept = [];
+  for (const p of parsed) {
+    const prev = kept[kept.length - 1];
+    if (prev && p.record.timestamp - prev.record.timestamp <= APPLE_SAME_WORKOUT_WINDOW_MS
+      && sameAppleLength(db.durationSec(p.record.duration), db.durationSec(prev.record.duration))) {
+      twins++;
+      if (better(p, prev)) kept[kept.length - 1] = p;
+      continue;
+    }
+    kept.push(p);
+  }
+  for (const { item, record } of kept) {
+    const near = db.findSyncedActivityNear(userId, record.timestamp, APPLE_SAME_WORKOUT_WINDOW_MS, record.external_id);
+    if (near?.garmin) garminCopies++;
+    else if (near && sameAppleLength(db.durationSec(record.duration), near.secs)) known.push({ item, record, externalId: near.external_id });
+    else fresh.push({ item, record });
+  }
+  return { fresh, known, rejected, garminCopies, twins };
+}
+
+app.post('/api/apple-health/sync', express.raw({ type: () => true, limit: '10mb' }), (req, res) => {
   const userId = resolveUserIdByAppleToken(req.query.token);
   if (!userId) return res.status(401).json({ error: 'Unknown or revoked sync token' });
+  keepApplePayload(userId, req);
   try {
-    const { activities } = req.body;
+    const body = Buffer.isBuffer(req.body) ? null : req.body;
+    let activities = body?.activities;
+    let rejected = 0, garminCopies = 0, known = 0;
+    if (!Array.isArray(activities) && body?.workouts !== undefined) {
+      const sorted = sortAppleWorkouts(appleWorkoutItems(body.workouts), userId);
+      ({ rejected, garminCopies } = sorted);
+      known = sorted.known.length + sorted.twins;
+      activities = sorted.fresh.map(f => f.record);
+    }
     if (!Array.isArray(activities)) {
-      return res.status(400).json({ error: 'activities must be an array' });
+      const message = 'Received, but there was no workouts or activities list to import (the raw push was saved on the server)';
+      db.setAppleSyncStatus(userId, { ok: false, message });
+      return res.status(400).json({ error: message });
     }
     const result = syncActivitiesForUser(activities, userId, 'Apple');
-    console.log(`Apple sync: imported ${result.imported}, merged ${result.merged}, skipped ${result.skipped}`);
-    db.setAppleSyncStatus(userId, {
-      ok: true,
-      message: `Imported ${result.imported}, merged ${result.merged}, skipped ${result.skipped}`,
-    });
-    res.json(result);
+    result.skipped += known;
+    const extra = (garminCopies ? `, ${garminCopies} already synced from Garmin` : '')
+      + (rejected ? `, ${rejected} unreadable` : '');
+    const message = `Imported ${result.imported}, merged ${result.merged}, skipped ${result.skipped}${extra}`;
+    console.log(`Apple sync: ${message}`);
+    // Unreadable workouts are a failure the badge should show: nothing
+    // retries them, and the Shortcut reported success.
+    db.setAppleSyncStatus(userId, { ok: rejected === 0, message });
+    res.json({ ...result, garminCopies, rejected, message });
   } catch (e) {
     console.error('POST /api/apple-health/sync', e);
     db.setAppleSyncStatus(userId, { ok: false, message: e.message });
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── Apple Health export import ──────────────────────────────────────────────
+// The Health app's "Export All Health Data" zip, uploaded from Settings: the
+// one free way to get Apple Watch ROUTES (the Shortcut's Find Workout exposes
+// none) and every workout older than the Shortcut's last 20. Called by the
+// browser, so identity is X-User-Id like everything else, not the Shortcut's
+// token, and it works whether or not the Shortcut is connected.
+//
+// POST streams the body to data/apple-export-{userId}.zip (hundreds of MB is
+// normal, far past express.json's limit) and answers 202 once it is on disk.
+// apple_export.py then reads it in the background and writes JSON, which is
+// imported here through the Shortcut's own sortAppleWorkouts(): a workout the
+// Shortcut already brought is not added twice, it only gains its route, and a
+// Garmin copy is skipped with its route. GET is the card's progress poll: the
+// run in progress and the last run's outcome, both in memory (a restart
+// forgets them, and nothing else needs them).
+//
+// Both files are deleted when the run ends, success or not: the zip is the
+// person's entire Health history, and nothing here reads it twice.
+// Story: DECISIONS.md#apple-health-export.
+const APPLE_EXPORT_MAX_BYTES = 4 * 1024 ** 3;
+const APPLE_EXPORT_TIMEOUT_MS = Number(process.env.APPLE_EXPORT_TIMEOUT_MS) || 30 * 60 * 1000;
+// The env override exists for testing/verify_backend.js, whose container has
+// no garminconnect for the real script to import.
+const APPLE_EXPORT_SCRIPT = process.env.APPLE_EXPORT_SCRIPT || path.join(__dirname, 'apple_export.py');
+const appleExportRuns = new Map();
+const appleExportLast = new Map();
+
+app.get('/api/apple-health/export', (req, res) => {
+  const userId = getUserId(req);
+  const run = appleExportRuns.get(userId);
+  res.json({
+    running: run ? { step: run.step, done: run.done, total: run.total, startedAt: run.startedAt } : null,
+    last: appleExportLast.get(userId) || null,
+  });
+});
+
+app.post('/api/apple-health/export', (req, res) => {
+  const userId = getUserId(req);
+  if (appleExportRuns.has(userId)) return res.status(409).json({ error: 'An import is already running' });
+  if (Number(req.get('content-length')) > APPLE_EXPORT_MAX_BYTES) {
+    return res.status(413).json({ error: 'That file is larger than any Health export should be' });
+  }
+  const zipPath = path.join(DATA_DIR, `apple-export-${userId}.zip`);
+  const outPath = path.join(DATA_DIR, `apple-export-${userId}.json`);
+  const run = { step: 'uploading', done: null, total: null, startedAt: Date.now() };
+  appleExportRuns.set(userId, run);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const file = fs.createWriteStream(zipPath);
+  let bytes = 0, head = Buffer.alloc(0), over = false;
+  const fail = (status, message) => {
+    if (over) return;
+    over = true;
+    appleExportRuns.delete(userId);
+    file.destroy();
+    fs.rmSync(zipPath, { force: true });
+    appleExportLast.set(userId, { ok: false, message, at: Date.now() });
+    if (!res.headersSent) res.status(status).json({ error: message });
+  };
+  req.on('data', chunk => {
+    bytes += chunk.length;
+    if (head.length < 4) head = Buffer.concat([head, chunk.subarray(0, 4)]);
+    if (bytes > APPLE_EXPORT_MAX_BYTES) { fail(413, 'That file is larger than any Health export should be'); req.destroy(); }
+  });
+  req.on('close', () => { if (!req.complete) fail(400, 'The upload was interrupted'); });
+  file.on('error', e => fail(500, e.message));
+  file.on('finish', () => {
+    if (over) return;
+    // Every zip starts PK\x03\x04. Checked here so a wrong file gets a plain
+    // answer at once instead of a Python traceback after a wait.
+    if (head.length < 4 || head.readUInt32LE(0) !== 0x04034b50) {
+      return fail(400, 'That isn\'t a zip file. Choose the export.zip the Health app made.');
+    }
+    res.status(202).json({ started: true, bytes });
+    runAppleExport(userId, run, zipPath, outPath);
+  });
+  req.pipe(file);
+});
+
+function runAppleExport(userId, run, zipPath, outPath) {
+  run.step = 'reading';
+  let pending = '';
+  const child = execFile('python3', [APPLE_EXPORT_SCRIPT, '--zip', zipPath, '--out', outPath, '--progress'],
+    { timeout: APPLE_EXPORT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        if (err) {
+          const said = /EXPORT_ERROR (.+)/.exec(stderr || '');
+          throw new Error(err.killed ? 'Reading the export took too long and was stopped'
+            : (said ? said[1] : 'The export could not be read'));
+        }
+        const message = importAppleExport(JSON.parse(fs.readFileSync(outPath, 'utf8')), userId);
+        console.log(`Apple export: ${message}`);
+        appleExportLast.set(userId, { ok: true, message, at: Date.now() });
+      } catch (e) {
+        console.error('Apple export:', e.message, (stderr || '').slice(-2000));
+        appleExportLast.set(userId, { ok: false, message: e.message, at: Date.now() });
+      } finally {
+        fs.rmSync(zipPath, { force: true });
+        fs.rmSync(outPath, { force: true });
+        appleExportRuns.delete(userId);
+      }
+    });
+  child.stdout.on('data', chunk => {
+    const lines = (pending + chunk).split('\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      const m = GARMIN_PROGRESS_RE.exec(line.trim());
+      if (!m) continue;
+      run.step = m[1];
+      run.done = m[2] ? Number(m[2]) : null;
+      run.total = m[3] ? Number(m[3]) : null;
+    }
+  });
+}
+
+// apple_export.py's JSON -> history rows and routes; returns the summary line.
+// A route is attached to whichever row the workout IS in the app: its own
+// applex- row, or the Shortcut's row for the same workout. Never to a row
+// that doesn't exist (a manual lift that won its merge keeps no external id),
+// and never over a route the row already has: that one may have been trimmed
+// or repaired since, and a re-export would silently undo it.
+function importAppleExport(parsed, userId) {
+  const items = Array.isArray(parsed?.workouts) ? parsed.workouts : [];
+  const { fresh, known, rejected, garminCopies, twins } = sortAppleWorkouts(items, userId);
+  const result = syncActivitiesForUser(fresh.map(f => f.record), userId, 'Apple export');
+  let routes = 0, badRoutes = 0;
+  for (const { item, record, externalId } of [...fresh, ...known]) {
+    const target = externalId || record.external_id;
+    if (!item.route || !db.hasExternalId(target, userId) || db.getActivityRoute(target, userId)) continue;
+    if (storeActivityRoute({ ...item.route, external_id: target }, userId)) badRoutes++;
+    else routes++;
+  }
+  if (routes) fillActivityWeather();
+  const unreadable = rejected + (Number(parsed?.unreadable) || 0);
+  return `Imported ${result.imported} workout${result.imported === 1 ? '' : 's'}`
+    + (result.merged ? ` (${result.merged} merged with ones logged by hand)` : '')
+    + `, ${known.length + result.skipped} already here, ${routes} route${routes === 1 ? '' : 's'} added`
+    + (twins ? `, ${twins} recorded twice (one kept)` : '')
+    + (garminCopies ? `, ${garminCopies} Garmin copies skipped` : '')
+    + (unreadable ? `, ${unreadable} unreadable` : '')
+    + (badRoutes ? `, ${badRoutes} routes rejected` : '');
+}
 
 // The Apple sync error badge's source, for the CURRENT user; null (nothing to
 // show) for a user with no Apple sync.
@@ -3966,6 +4323,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   warmLiturgicalCache();
   fillActivityWeather();
 });
+// Node drops any request not fully RECEIVED within 5 minutes by default, and
+// a Health export upload (POST /api/apple-health/export) can be hundreds of MB
+// over a phone's Wi-Fi. LAN-only app, so the slow-client guard costs nothing.
+server.requestTimeout = 60 * 60 * 1000;
 
 // ── Shutdown ────────────────────────────────────────────────────────────────────
 // These handlers let the database close cleanly on a deploy, and must be

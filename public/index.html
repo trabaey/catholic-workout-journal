@@ -454,7 +454,9 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
 #map-detail:empty { display: none; }
 #map-open { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 #map-open:empty { display: none; }
-#map-detail:has(> #map-open:not(:empty)) > .map-list { flex: none; height: 0; overflow: hidden; visibility: hidden; }
+/* A class, never :has(> #map-open:not(:empty)): WebKit does not re-check a
+   :has() over :empty as children change. See syncMapPanelClasses(). */
+#map-detail.map-open-filled > .map-list { flex: none; height: 0; overflow: hidden; visibility: hidden; }
 /* ROUTE MAP. #route-map is the one element in this app that is NOT rebuilt
    from a string -- Leaflet owns its children and re-rendering it would destroy
    the map instance. See renderMapView(). Leaflet needs a real height or it
@@ -861,20 +863,20 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
    so without it a weight and a rep count look alike. It is its own class, so
    .set-row stays exactly one per set. The two buttons say what they are and
    need no heading. */
-.set-row, .set-head { display: grid; grid-template-columns: 28px 1fr 1fr 54px 74px; gap: 8px; align-items: center; margin-bottom: 6px; }
+.set-row, .set-head { display: grid; grid-template-columns: 28px 1fr 1fr 66px 74px; gap: 8px; align-items: center; margin-bottom: 6px; }
 .set-head { margin-bottom: 2px; font-size: var(--fs-micro); color: var(--t4); text-align: center; }
 .set-head > :first-child { text-align: left; }
 /* An unranked ("just log it") exercise has no weight input, so its row is one
    column short. The count column takes the freed space rather than the row
    re-flowing, which would leave Done and Warm-up sitting at a different x
    from every other exercise in the same session. */
-.set-row.no-weight, .set-head.no-weight { grid-template-columns: 28px 1fr 54px 74px; }
+.set-row.no-weight, .set-head.no-weight { grid-template-columns: 28px 1fr 66px 74px; }
 /* A timed set's ▶ (startHold) sits between its seconds and Warm-up. The
    inputs give up the width it takes, never Done, which lines up down every
    card; the tighter gap and side padding keep "±lbs" readable in the weight
    box on a phone. */
-.set-row.timed, .set-head.timed { grid-template-columns: 28px 1fr 1fr 32px 54px 74px; gap: 6px; }
-.set-row.timed.no-weight, .set-head.timed.no-weight { grid-template-columns: 28px 1fr 32px 54px 74px; }
+.set-row.timed, .set-head.timed { grid-template-columns: 28px 1fr 1fr 32px 66px 74px; gap: 6px; }
+.set-row.timed.no-weight, .set-head.timed.no-weight { grid-template-columns: 28px 1fr 32px 66px 74px; }
 .set-row.timed .set-input { padding-left: 2px; padding-right: 2px; }
 .hold-btn { font-size: var(--fs-emph); padding: 6px 0; border: 1.5px solid var(--line); border-radius: var(--r-md); cursor: pointer; background: var(--page); color: #10b981; }
 .set-input { font-size: var(--fs-field); padding: 6px; border: 1.5px solid var(--line); border-radius: var(--r-md); text-align: center; width: 100%; background: var(--page); color: var(--t1); outline: none; }
@@ -890,7 +892,7 @@ input[type="date"].set-input::-webkit-date-and-time-value { text-align: center; 
 /* Warmup toggle. Neutral rather than the done-btn's green: it marks a set as
    NOT counting toward working-set totals, so it must not read as another
    flavour of "completed", and it is neither an achievement nor a warning. */
-.warmup-btn { font-size: var(--fs-micro); padding: 8px 0; min-height: 34px; border: 1.5px solid var(--line); border-radius: var(--r-md); cursor: pointer; background: var(--page); color: var(--t4); font-weight: 700; }
+.warmup-btn { font-size: var(--fs-micro); padding: 8px 4px; min-height: 34px; border: 1.5px solid var(--line); border-radius: var(--r-md); cursor: pointer; background: var(--page); color: var(--t4); font-weight: 700; }
 .warmup-btn.active { background: var(--raised); color: var(--t1); border-color: var(--line-strong); }
 
 .notes-area { width: 100%; min-height: 80px; padding: 12px; border: 1.5px solid var(--line); border-radius: var(--r-lg); font-family: inherit; font-size: var(--fs-field); resize: vertical; margin-top: 8px; background: var(--page); color: var(--t1); }
@@ -1605,9 +1607,13 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
      one-screen height (see #history-subview-map). The ⚙ filters and 📍
      places leave that row for the rail, always open there as #map-side,
      pinned below the main nav like #journal-side; the row keeps only the mode
-     switch. #map-side is out of the grid's flow (fixed), so it takes no cell. */
-  body[data-subtab="map"] #history-subview-map { display: grid !important; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto minmax(0, 1fr); gap: 8px 10px; }
-  body[data-subtab="map"] #history-subview-map:has(> #map-detail:empty) { grid-template-columns: minmax(0, 1fr); }
+     switch. #map-side is out of the grid's flow (fixed), so it takes no cell.
+     The second column exists only while the panel has something in it, read
+     from .map-detail-filled (syncMapPanelClasses), never from :has() over
+     :empty, which WebKit does not re-check: there the panel lands in an
+     implicit, content-sized column and crushes the map. */
+  body[data-subtab="map"] #history-subview-map { display: grid !important; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 8px 10px; }
+  body[data-subtab="map"] #history-subview-map.map-detail-filled { grid-template-columns: minmax(0, 1fr) 380px; }
   /* The phone's one-screen height, less nothing for the sub-tab row: it is
      hidden here (the sub-tabs are in the rail). */
   #history-subview-map { height: calc(100vh - 1rem - var(--top-fade)); height: calc(100svh - 1rem - var(--top-fade)); }
@@ -16525,17 +16531,39 @@ const App = (() => {
   // which is the calendar artifact that module exists to avoid. Those cards
   // print the day count they actually used, so a button reading "30 days" over
   // a 28-day metric is visible rather than silent.
-  function chartWindowSpan(chartKey, fallback, { weekAligned = false } = {}) {
+  //
+  // `since` is the date keys THIS card's own data falls on. All data then
+  // starts at the card's first row, not the app's: synced workout history can
+  // run back years before the first weigh-in or check-in, and spanning those
+  // years squashes a calendar-axis chart into its right-hand edge (and dilutes
+  // a per-week rate with time nothing could have been logged). Omitted, or
+  // with no keys, All data falls back to earliestDataDate().
+  function chartWindowSpan(chartKey, fallback, { weekAligned = false, since = null } = {}) {
     const choice = chartWindowDays(chartKey, fallback);
     const end = new Date(); end.setHours(0, 0, 0, 0);
     let days = choice;
     if (!days) {
-      const first = earliestDataDate();
+      const first = (since && firstDateOf(since)) || earliestDataDate();
       days = first ? daysBetween(first, end) + 1 : 30;
     }
     if (weekAligned) days = Math.max(7, days - (days % 7));
     return { ...rollingWindow(days, end), all: !choice, choice };
   }
+
+  // The earliest of some stored date keys, as local midnight, or null. Plain
+  // string comparison is enough: ISO keys sort chronologically.
+  function firstDateOf(keys) {
+    let min = null;
+    for (const k of keys) if (k && (!min || k < min)) min = k;
+    const d = min && parseDateKey(min);
+    if (!d || isNaN(d)) return null;
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  // The date keys of every lift session — the `since` of the cards built only
+  // from lifting.
+  const liftDates = () => historyCache.filter(h => h.type === 'lift').map(h => h.date);
 
   // The control itself. Goes in the card's .ex-header right slot — or ONCE on
   // the group header of a card FAMILY (Exercise Progress, Pace Trend), the same
@@ -17002,7 +17030,7 @@ const App = (() => {
   // training block, not a plateau.
   function renderStallList() {
     const TITLE = '🎯 Stalls', ASK = 'Which lifts have stopped getting stronger, or stopped getting done?';
-    const sw = chartWindowSpan('stalls', 92, { weekAligned: true });
+    const sw = chartWindowSpan('stalls', 92, { weekAligned: true, since: liftDates() });
     const res = classifyLiftProgress(historyCache, sw.start, sw.end, liveRoutineNameMap(),
       { excused: excusedDaySet(), phases: lifePhasesCache });
     if (!res.ok) {
@@ -17201,7 +17229,7 @@ const App = (() => {
     // below the 2-point floor at 30 days and reappear at 3 months — which is
     // why 3 months is the default.
     const TITLE = '📈 Exercise progress', ASK = 'Is each lift I care about getting stronger, and how fast?';
-    const span = chartWindowSpan('exercise-progress', 92);
+    const span = chartWindowSpan('exercise-progress', 92, { since: liftDates() });
     const freq = exerciseFrequency();
 
     if (!freq.size) return chartNeedsData(TITLE, 'Log a few lifting workouts to see trends.', null, ASK);
@@ -17464,7 +17492,7 @@ const App = (() => {
   // renderAnalytics() is fine for that — no Analytics card holds free text.
   function renderWorkingSetsCard() {
     const TITLE = '🧱 Sets per muscle', ASK = 'How much weekly work is each muscle getting, and from what?';
-    const w = chartWindowSpan('working-sets', 30, { weekAligned: true });
+    const w = chartWindowSpan('working-sets', 30, { weekAligned: true, since: liftDates() });
     const res = workingSetsPerMuscleWeek(historyCache, w.start, w.end, w.days);
     if (!res.ok) {
       return chartNeedsData(TITLE, res.reason,
@@ -17727,7 +17755,7 @@ const App = (() => {
   // DECISIONS.md#balance-ranges-and-suggestions.
   function renderBalanceRatiosCard() {
     const TITLE = '⚖️ Balance', ASK = 'Is my training lopsided: push or pull, upper or lower, one leg or two?';
-    const w = chartWindowSpan('balance-ratios', 30, { weekAligned: true });
+    const w = chartWindowSpan('balance-ratios', 30, { weekAligned: true, since: liftDates() });
     const res = balanceRatios(historyCache, w.start, w.end);
     if (!res.ok) {
       return chartNeedsData(TITLE, res.reason,
@@ -17868,7 +17896,7 @@ const App = (() => {
   // it has actually covered, not its nominal width, so the bar still filling
   // up is a fair rate rather than a short bar.
   function renderVolumeChart() {
-    const span = chartWindowSpan('volume', 92);
+    const span = chartWindowSpan('volume', 92, { since: liftDates() });
     const MAX_VOL_BARS = 14;
     const LADDER = [
       { days: 7,  label: 'week' },
@@ -18084,8 +18112,8 @@ const App = (() => {
   //   — a bucket is not a day, and each bar already is a weekly rate.
   function renderEffortCard() {
     const KEY = 'rpe', TITLE = '💢 Effort', ASK = 'How much effort have I put in lately?';
-    const span = chartWindowSpan(KEY, 30);
     const daily = buildDailyLoads();
+    const span = chartWindowSpan(KEY, 30, { since: [firstRatedDay(daily)] });
     // Day i of the window as a stored key, by CALENDAR arithmetic — adding
     // 86400000ms instead drifts a day across a DST change.
     const keys = Array.from({ length: span.days }, (_, i) =>
@@ -18330,9 +18358,9 @@ const App = (() => {
   // absorb, and what kind of work is it short on?"
   function renderTrainingLoadCard() {
     const KEY = 'training-load', TITLE = '📊 Garmin load', ASK = 'Is my cardio load in the range my fitness can absorb?';
-    const span = chartWindowSpan('training-load', 92);
     const byDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
     const everMeasured = garminDailyCache.filter(r => Number.isFinite(r.load_acute)).sort(byDate);
+    const span = chartWindowSpan('training-load', 92, { since: everMeasured.map(r => r.date) });
     const rows = everMeasured.filter(r => dateInPeriod(r.date, span.start, span.end));
     if (rows.length < 2) {
       return chartNeedsData(TITLE, 'Garmin works it out from workouts the watch recorded with heart rate; it arrives with the morning sync.',
@@ -18661,7 +18689,7 @@ const App = (() => {
     // Weigh-ins), not a rolling N*24h instant window — a raw timestamp
     // cutoff can include or exclude a day's activity based on the recording
     // timezone rather than the local calendar day it actually happened on.
-    const span = chartWindowSpan('distance', 30);
+    const span = chartWindowSpan('distance', 30, { since: historyCache.filter(h => parseFloat(h.distance) > 0).map(h => h.date) });
     const WINDOW_DAYS = span.days;
     const totals = {};    // type -> km
     const prevTotals = {}; // type -> km over the equal-length window before
@@ -18748,9 +18776,9 @@ const App = (() => {
   // Answers: "How many calories am I burning a day, and is that more or less than before?"
   function renderDailyCaloriesCard() {
     const KEY = 'daily-calories', TITLE = '🔥 Calories burned', ASK = 'How many calories am I burning a day, and is it changing?';
-    const span = chartWindowSpan(KEY, 30);
     const byDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
     const everMeasured = garminDailyCache.filter(r => garminReading(r, 'calories_total') != null).sort(byDate);
+    const span = chartWindowSpan(KEY, 30, { since: everMeasured.map(r => r.date) });
     const rows = everMeasured.filter(r => dateInPeriod(r.date, span.start, span.end));
     if (rows.length < 2) {
       return chartNeedsData(TITLE, 'Garmin estimates each day\'s burn from the watch; it arrives with the morning sync.',
@@ -20048,8 +20076,9 @@ const App = (() => {
   // often does the readiness verdict cry wolf?"
   function renderReadinessTrendCard() {
     const title = '🚦 Readiness', ASK = 'Did my body flag illness or strain before I felt it?';
-    const span = chartWindowSpan('readiness', 92);
     const series = readinessSeries();
+    const span = chartWindowSpan('readiness', 92,
+      { since: [...series.verdicts.values()].filter(v => v.status !== 'UNKNOWN').map(v => v.date) });
     const verdicts = [...series.verdicts.values()]
       .filter(v => dateInPeriod(v.date, span.start, span.end));
     const measured = verdicts.filter(v => v.status !== 'UNKNOWN');
@@ -20215,7 +20244,7 @@ const App = (() => {
   function renderInjuryRecoveryCard() {
     if (!injuriesCache.length) return '';
 
-    const span = chartWindowSpan('injury', 30);
+    const span = chartWindowSpan('injury', 30, { since: injuryCheckinsCache.map(r => r.date) });
     const days = [];
     for (let i = span.days - 1; i >= 0; i--) {
       const d = new Date(span.end); d.setDate(d.getDate() - i);
@@ -20590,12 +20619,12 @@ const App = (() => {
   // written once. The render* wrappers are what buildAnalyticsParts lists, and
   // each carries its own question.
   function recoveryMetricCard(cfg) {
-    const span = chartWindowSpan(cfg.key, 92);
     // ONE point per day THIS metric was measured. The x-axis is event-indexed,
     // so a night the watch spent on the nightstand is compressed out rather than
     // drawn as a gap — every layer that cares about the real calendar distance
     // (the mean, the band) walks by date and gets it right anyway.
     const everMeasured = garminDailyCache.filter(r => garminReading(r, cfg.metric) != null);
+    const span = chartWindowSpan(cfg.key, 92, { since: everMeasured.map(r => r.date) });
     const entries = everMeasured
       .filter(r => dateInPeriod(r.date, span.start, span.end))
       .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
@@ -20773,7 +20802,7 @@ const App = (() => {
   // Story: DECISIONS.md#analytics-question-audit.
   function renderBodyWeightChart() {
     const TITLE = '⚖️ Weigh-ins', ASK = 'Which way is my weight heading, and how fast?';
-    const span = chartWindowSpan('weigh-ins', 92);
+    const span = chartWindowSpan('weigh-ins', 92, { since: bodyWeightCache.map(b => b.date) });
     const NUM_DAYS = span.days;
     const start = new Date(span.start);
 
@@ -21060,7 +21089,8 @@ const App = (() => {
   // Story: DECISIONS.md#stress-markers.
   function renderStressedDaysCard() {
     const TITLE = '😰 Stressed days', ASK = 'On which days did my body and I both say I was under stress?';
-    const span = chartWindowSpan('stressed-days', 92);
+    const span = chartWindowSpan('stressed-days', 92,
+      { since: checkinsCache.filter(c => c && c.date && stressDayVerdict(c.date)).map(c => c.date) });
 
     // Any comparable day at all, so an empty window can say whether a longer
     // range would fill it rather than just going quiet.
@@ -21334,8 +21364,8 @@ const App = (() => {
   // stack of rest mornings at x = 0 would otherwise read as one dot).
   function renderEffortFeelingCard() {
     const KEY = 'feeling-rpe', TITLE = '🙂💢 Effort → next morning', ASK = "Does yesterday's effort show up in how I wake up?";
-    const span = chartWindowSpan(KEY, 92);
     const all = buildEffortFeelingPairs();
+    const span = chartWindowSpan(KEY, 92, { since: all.map(p => p.date) });
     const pairs = all.filter(p => dateInPeriod(p.date, span.start, span.end));
     if (pairs.length < 2) {
       return chartNeedsData(TITLE, "Log morning check-ins and rate your workouts' effort (RPE) to see this.",
@@ -21448,9 +21478,9 @@ const App = (() => {
   // morning?"). Story: DECISIONS.md#analytics-question-audit.
   function renderSleepVsFeelingChart() {
     const TITLE = '😴🙂 Sleep → morning feeling', ASK = 'Does a better night mean I feel better that morning?';
-    const span = chartWindowSpan('sleep-feeling', 30);
     const everRated = checkinsCache
       .filter(c => c.morning_sleep != null && c.morning_feeling != null && c.morning_timestamp);
+    const span = chartWindowSpan('sleep-feeling', 30, { since: everRated.map(c => c.date) });
     const entries = everRated
       .filter(c => dateInPeriod(c.date, span.start, span.end))
       .sort((a, b) => a.morning_timestamp - b.morning_timestamp);
@@ -21595,8 +21625,8 @@ const App = (() => {
   // affect that night's sleep?"
   function renderEveningSleepChart() {
     const TITLE = '🌙 Evening → sleep', ASK = "Does how my evening goes affect that night's sleep?";
-    const span = chartWindowSpan('evening-sleep', 30);
     const allEvenings = buildEveningNextMorningPairs();
+    const span = chartWindowSpan('evening-sleep', 30, { since: allEvenings.map(e => e.date) });
     const entries = allEvenings
       .filter(e => dateInPeriod(e.date, span.start, span.end))
       .sort((a, b) => a.date.localeCompare(b.date)); // ISO date keys sort correctly as plain strings
@@ -21910,7 +21940,7 @@ const App = (() => {
     // One slot per calendar day across the window — the same day-slot walk
     // renderBodyWeightChart() uses, so a gap is real elapsed time, not a
     // compressed-out day.
-    const span = chartWindowSpan('checkin-flags', 30);
+    const span = chartWindowSpan('checkin-flags', 30, { since: checkinsCache.filter(checkinHasContent).map(c => c.date) });
     const NUM_DAYS = span.days;
     const days = [];
     const cur = new Date(span.start);
@@ -22039,9 +22069,9 @@ const App = (() => {
   // Answers: "Is my aerobic fitness going up?"
   function renderVo2MaxCard() {
     const KEY = 'vo2max', TITLE = '🫁 VO2 max', ASK = 'Is my aerobic fitness going up?';
-    const span = chartWindowSpan('vo2max', 365);
     const byDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
     const everMeasured = garminDailyCache.filter(r => Number.isFinite(r.vo2max)).sort(byDate);
+    const span = chartWindowSpan('vo2max', 365, { since: everMeasured.map(r => r.date) });
     const rows = everMeasured.filter(r => dateInPeriod(r.date, span.start, span.end));
     if (rows.length < 2) {
       return chartNeedsData(TITLE, 'Garmin estimates it from runs and outdoor walks with heart rate; it arrives with the morning sync.',
@@ -22238,8 +22268,9 @@ const App = (() => {
   // the answer (see renderPaceTrendRow), the line the evidence.
   function renderPaceTrendChart() {
     const ASK = 'Am I getting faster at my usual distances?';
-    const span = chartWindowSpan('pace', 0);
-    const allPaced = buildAllPacedEntries().filter(p => dateInPeriod(p.date, span.start, span.end));
+    const everPaced = buildAllPacedEntries();
+    const span = chartWindowSpan('pace', 0, { since: everPaced.map(p => p.date) });
+    const allPaced = everPaced.filter(p => dateInPeriod(p.date, span.start, span.end));
     // ONE flag for every distance bucket below — the rows are one chart split
     // by distance, not four charts, so they answer the same question together.
     const flagId = chartFlagId('pace');
@@ -22412,8 +22443,8 @@ const App = (() => {
   // and the wet/dry row says what rain costs.
   function renderWeatherPaceCard() {
     const TITLE = '🌦️ Weather & pace', ASK = 'How much do heat, cold and rain slow me down?';
-    const span = chartWindowSpan('weather-pace', 0);
     const all = weatherPacePoints();
+    const span = chartWindowSpan('weather-pace', 0, { since: all.map(p => p.date) });
     const inRange = all.filter(p => dateInPeriod(p.date, span.start, span.end));
 
     const counts = new Map();
@@ -22555,8 +22586,8 @@ const App = (() => {
   // below split every tag you've used.
   function renderSnowPaceCard() {
     const TITLE = '❄️ Snow & pace', ASK = 'How much do snow conditions slow me down?';
-    const span = chartWindowSpan('snow-pace', 0);
     const all = snowPacePoints();
+    const span = chartWindowSpan('snow-pace', 0, { since: all.map(p => p.date) });
     const pts = all.filter(p => dateInPeriod(p.date, span.start, span.end));
     if (pts.length < WEATHER_PACE_MIN_POINTS) {
       return chartNeedsData(TITLE, span.all
@@ -22693,7 +22724,7 @@ const App = (() => {
   // Answers: "What could I run a 5K in right now?"
   function render5kEstimateCard() {
     const TITLE = '⏱ Estimated 5K', ASK = 'What could I run a 5K in right now?';
-    const spanFor = type => chartWindowSpan(`5k-${type}`, 0);
+    const spanFor = (type, entries) => chartWindowSpan(`5k-${type}`, 0, { since: entries.map(e => e.date) });
     const MIN_DISTANCE_KM = 1.5;
     const MAX_DISTANCE_KM = 8;
     const MIN_RPE = 7;
@@ -22719,7 +22750,7 @@ const App = (() => {
     }
 
     const cards = [...byType.entries()].map(([type, entries]) => {
-      const span = spanFor(type);
+      const span = spanFor(type, entries);
       const inWindow = entries.filter(e => dateInPeriod(e.date, span.start, span.end));
       if (!inWindow.length) {
         const { name } = WORKOUT_TYPES.find(w => w.value === type) || {};
@@ -22875,7 +22906,7 @@ const App = (() => {
       return { label: wt?.name || activityTypes[type]?.label || type, emoji: wt?.emoji || activityTypes[type]?.emoji || '🏅' };
     };
 
-    const span = chartWindowSpan('heart-rate', 92);
+    const span = chartWindowSpan('heart-rate', 92, { since: active.entries.map(e => e.date) });
     const entries = active.entries.filter(e => dateInPeriod(e.date, span.start, span.end));
     if (entries.length < 2) {
       return chartNeedsData(TITLE, `Fewer than 2 workouts with heart rate in the last ${span.days} days.`,
@@ -23007,7 +23038,8 @@ const App = (() => {
   // session's hardest.
   function renderClimbingProgressCard() {
     const TITLE = '🧗 Climbing progress', ASK = 'Am I climbing harder grades than I used to?';
-    const span = chartWindowSpan('climbing-progress', 0);
+    const span = chartWindowSpan('climbing-progress', 0,
+      { since: historyCache.filter(h => h.type === 'climb' && Array.isArray(h.routes) && h.routes.length).map(h => h.date) });
     const sessions = historyCache
       .filter(h => h.type === 'climb' && Array.isArray(h.routes) && h.routes.length && h.timestamp
         && dateInPeriod(h.date, span.start, span.end))
@@ -30842,6 +30874,25 @@ const App = (() => {
 
   // ── Rendering ──────────────────────────────────────────────────────────────
 
+  // Two layout rules depend on whether a map panel is empty: the desktop
+  // grid's second column (is #map-detail filled?) and hiding the list behind
+  // an opened route or segment (is #map-open filled?). They read these classes
+  // rather than :has(:empty), which WebKit evaluates once and then never
+  // re-checks as the panels' children change. One observer over #map-detail's
+  // whole subtree keeps both in step, so none of the panel's several writers
+  // has to remember to. #map-open is rebuilt inside #map-detail, hence the
+  // fresh lookup each time.
+  function syncMapPanelClasses() {
+    const view = document.getElementById('history-subview-map');
+    const detail = document.getElementById('map-detail');
+    if (!view || !detail) return;
+    const open = document.getElementById('map-open');
+    view.classList.toggle('map-detail-filled', detail.childNodes.length > 0);
+    detail.classList.toggle('map-open-filled', !!open && open.childNodes.length > 0);
+  }
+  new MutationObserver(syncMapPanelClasses)
+    .observe(document.getElementById('map-detail'), { childList: true, subtree: true });
+
   // Answers: "Where do I actually run, ride and walk, which routes do I
   // repeat, and am I getting faster on them?"
   //
@@ -33250,7 +33301,9 @@ const App = (() => {
         <div class="card-title">📱 Apple Health sync</div>
         <p style="font-size:var(--fs-caption);color:var(--t4);margin-bottom:10px;">Imports workouts from Apple Health via an iOS Shortcut that pushes to a personal sync URL. Generate one to enable it for this user.</p>
         <button class="save-btn" onclick="App.connectApple()">Generate my sync URL</button>
+        ${appleExportSectionHTML()}
       </div>`;
+      pollAppleExport();
       return;
     }
     container.innerHTML = `<div class="exercise-card" style="margin-bottom:12px;">
@@ -33262,7 +33315,104 @@ const App = (() => {
         <button class="save-btn" style="margin-top:0;background:var(--raised);flex:1;" onclick="App.connectApple()">Regenerate URL</button>
         <button class="save-btn" style="margin-top:0;background:var(--raised);flex:1;" onclick="App.disconnectApple()">Disconnect</button>
       </div>
+      ${appleExportSectionHTML()}
     </div>`;
+    pollAppleExport();
+  }
+
+  // ── Health export import (inside the Apple card) ─────────────────────────
+  // The Health app's "Export All Health Data" zip, for what the Shortcut
+  // can't bring: GPS routes, and workouts older than its last 20. Works with
+  // or without the Shortcut connected. The upload is a raw XMLHttpRequest, not
+  // the api client, because only XHR reports UPLOAD progress and the file is
+  // often hundreds of MB; it adds X-User-Id by hand like the photo uploads.
+  // The server then reads the zip in the background; pollAppleExport() writes
+  // its progress into #apple-export-status alone, never re-rendering the card.
+  // Story: DECISIONS.md#apple-health-export.
+  const APPLE_EXPORT_STEPS = { uploading: 'Uploading', reading: 'Reading the export', routes: 'Drawing routes' };
+  let appleExportPollTimer = null;
+  let appleExportWatching = false;
+
+  function appleExportSectionHTML() {
+    return `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+      <div style="font-size:var(--fs-body);font-weight:600;margin-bottom:4px;">Import a Health export</div>
+      <p style="font-size:var(--fs-caption);color:var(--t4);margin-bottom:8px;">Brings in every Apple Watch workout with its GPS route. In the Health app, tap your picture, then <b>Export All Health Data</b>, and save the zip to Files. Choose it here. Workouts already in the app are not added twice.</p>
+      <input id="apple-export-file" type="file" accept=".zip,application/zip" style="display:none;" onchange="App.importAppleExport(this)">
+      <button class="save-btn" style="margin-top:0;background:var(--raised);" onclick="document.getElementById('apple-export-file').click()">Choose export.zip</button>
+      <p id="apple-export-status" style="font-size:var(--fs-caption);color:var(--t4);margin-top:6px;"></p>
+    </div>`;
+  }
+
+  function setAppleExportStatus(html) {
+    const el = document.getElementById('apple-export-status');
+    if (el) el.innerHTML = html;
+  }
+
+  function appleExportLastLine(last) {
+    if (!last) return '';
+    return last.ok
+      ? `<span style="color:var(--brand-text);">✅ ${escapeHTML(last.message)}</span>`
+      : `<span style="color:var(--neg);">⚠️ ${escapeHTML(last.message)}</span>`;
+  }
+
+  async function importAppleExport(input) {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    setAppleExportStatus('Uploading… 0%');
+    try {
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/apple-health/export');
+        for (const [k, v] of Object.entries(userHeaders({ 'Content-Type': 'application/zip' }))) xhr.setRequestHeader(k, v);
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) setAppleExportStatus(`Uploading… ${Math.round(e.loaded * 100 / e.total)}%`);
+        };
+        xhr.onload = () => {
+          if (xhr.status === 202) return resolve();
+          let msg = `The server answered ${xhr.status}`;
+          try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) { /* not JSON */ }
+          reject(new Error(msg));
+        };
+        xhr.onerror = () => reject(new Error('The upload failed. Check the connection and try again.'));
+        xhr.send(file);
+      });
+    } catch (e) {
+      setAppleExportStatus(`<span style="color:var(--neg);">⚠️ ${escapeHTML(e.message)}</span>`);
+      return;
+    }
+    appleExportWatching = true;
+    pollAppleExport();
+  }
+
+  // Shows the run in progress, else the last outcome. Polls only while a run
+  // is going; the first finished answer after watching one refreshes the data
+  // and drops the route cache, which refreshDataSilently leaves alone (see
+  // loadActivityRoutes).
+  async function pollAppleExport() {
+    clearTimeout(appleExportPollTimer);
+    let s;
+    try { s = await api.get('/api/apple-health/export'); }
+    catch (e) { if (appleExportWatching) appleExportPollTimer = setTimeout(pollAppleExport, 3000); return; }
+    if (s?.running) {
+      appleExportWatching = true;
+      const r = s.running;
+      const label = APPLE_EXPORT_STEPS[r.step] || 'Working';
+      const count = r.total ? (r.step === 'reading' ? ` ${r.done}%` : ` ${r.done} of ${r.total}`) : '';
+      setAppleExportStatus(`${label}…${count}`);
+      appleExportPollTimer = setTimeout(pollAppleExport, 1500);
+      return;
+    }
+    setAppleExportStatus(appleExportLastLine(s?.last));
+    if (appleExportWatching) {
+      appleExportWatching = false;
+      if (s?.last?.ok) {
+        await refreshDataSilently();
+        activityRoutesCache = null;
+        routeSegmentsCache = null;
+        showToast('📱 Health export imported');
+      }
+    }
   }
 
   async function connectApple() {
@@ -33767,7 +33917,7 @@ const App = (() => {
     renderActivityTypesCard,
     exportData, triggerImport, importData, downloadFullDatabase, syncGarmin,
     renderGarminSyncCard, connectGarmin, disconnectGarmin,
-    renderAppleSyncCard, connectApple, disconnectApple,
+    renderAppleSyncCard, connectApple, disconnectApple, importAppleExport,
     chooseUser, switchUser,
     // The confirmation dialog's buttons and backdrop.
     answerConfirm,

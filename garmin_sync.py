@@ -1264,7 +1264,11 @@ def fetch_paused_s(api, activity_id):
 # point distance or time alone would keep is still kept.
 def route_from_samples(samples, paused_s, tolerance_m=SIMPLIFY_TOLERANCE_M,
                        tolerance_s=SIMPLIFY_TOLERANCE_S):
-    timed = bool(samples) and all(len(s) > 2 and s[2] is not None for s in samples)
+    # A clock that never moves (some Health exports stamp every point of a
+    # route with the same instant) is no clock: as untimed, not a track run
+    # in 0 s, which would time every segment on it at 0:00.
+    timed = bool(samples) and all(len(s) > 2 and s[2] is not None for s in samples) \
+        and samples[-1][2] > samples[0][2]
     # Seconds since the first sample, never decreasing: a clock that steps
     # back must not make a later point earlier than the one before it.
     secs = None
