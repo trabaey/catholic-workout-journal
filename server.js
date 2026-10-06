@@ -999,11 +999,15 @@ app.post('/api/import', (req, res) => {
       }
 
       // An empty history list with replaceHistory THROWS, rolling everything
-      // back: `[]` would otherwise clear every workout and insert nothing, and
-      // the frontend always sends replaceHistory: true. An empty list means a
-      // truncated or hand-edited file, not "restore all but history".
-      if (Array.isArray(history) && !history.length && replaceHistory) {
-        throw new Error('Backup contains an empty history list. Nothing was changed.');
+      // back, when this user HAS workouts: `[]` would otherwise clear every one
+      // of them and insert nothing, and the frontend always sends
+      // replaceHistory: true. Against workouts, an empty list means a
+      // truncated or hand-edited file, not "restore all but history". With no
+      // workouts there is nothing to lose, and `[]` is simply what a backup
+      // from someone who only uses check-ins, the journal or the trackers
+      // holds, so that restore goes ahead.
+      if (Array.isArray(history) && !history.length && replaceHistory && db.getHistory(userId).length) {
+        throw new Error('Backup contains no workouts, but you have some. Nothing was changed.');
       }
       // Old history id -> the fresh one addHistory hands back, for
       // injuries.history_id below. Same problem as injuryIdMap: a replayed
@@ -2911,10 +2915,15 @@ function parseEnvFile(filePath) {
   return out;
 }
 // Returns {email, password} or null. User 1 alone falls back to the
-// data/garmin.env -> .env -> workout-tracker.env chain.
+// data/garmin.env -> .env -> workout-tracker.env chain, and only while its own
+// file does not EXIST: an existing one wins even with no credentials in it,
+// which is how Disconnect turns user 1 off (deleteGarminCredentialsFile).
+// garmin_sync.py's load_credentials reads the first file that exists, so the
+// two agree.
 function readGarminCredentials(userId) {
   const own = parseEnvFile(garminEnvPath(userId));
   if (own?.GARMIN_EMAIL && own?.GARMIN_PASSWORD) return { email: own.GARMIN_EMAIL, password: own.GARMIN_PASSWORD };
+  if (own) return null;
   if (userId === 1) {
     for (const p of legacyGarminEnvPaths()) {
       const parsed = parseEnvFile(p);
@@ -2926,9 +2935,15 @@ function readGarminCredentials(userId) {
 function writeGarminCredentials(userId, email, password) {
   writeFileAtomic(garminEnvPath(userId), `GARMIN_EMAIL=${email}\nGARMIN_PASSWORD=${password}\n`, { mode: 0o600 });
 }
+// User 1 gets an empty file instead of none. Deleting it would hand the
+// account straight back to the legacy chain, so Disconnect would report
+// success and the next sync would sign in again. The legacy files are left
+// alone: .env and workout-tracker.env are OMV's and can hold other settings.
 function deleteGarminCredentialsFile(userId) {
   const p = garminEnvPath(userId);
-  if (fs.existsSync(p)) fs.unlinkSync(p);
+  if (userId === 1) {
+    writeFileAtomic(p, '# Disconnected in the app. Delete this file to use data/garmin.env (or .env) again.\n', { mode: 0o600 });
+  } else if (fs.existsSync(p)) fs.unlinkSync(p);
 }
 // Must match garmin_sync.py's token_store_for(user_id) character for
 // character, or a credential change here wouldn't invalidate the session the

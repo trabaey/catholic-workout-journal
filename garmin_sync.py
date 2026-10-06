@@ -206,7 +206,9 @@ def load_credentials(user_id=1):
     .env -> workout-tracker.env, the paths that account used before per-user
     credentials. data/ comes first because OMV only mounts it; the last two
     are rewritten by OMV on rebuild. setdefault, so a real environment
-    variable beats the file.
+    variable beats the file. The first file that EXISTS is used, credentials or
+    not: Disconnect leaves user 1 an empty data/garmin-1.env precisely so the
+    legacy files are not reached (server.js deleteGarminCredentialsFile).
 
     This is the ONE copy of the precedence; scripts/backfill_garmin_timestamps.py
     reuses it. Only ever CALL it from __main__, never at import time: the test
