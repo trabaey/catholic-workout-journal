@@ -29338,6 +29338,9 @@ const App = (() => {
         // Segments reference nothing by id -- a restore upserts on the name --
         // so they need not travel with the routes they were marked on.
         wt_route_segments: JSON.stringify(rs),
+        // The scale every rating above is on. A backup without it may predate
+        // the 1-10 scales, and POST /api/import decides from the values.
+        wt_rating_scale: 10,
         // Your own check-in chips and built-in show/hide choices. Without it a
         // restore onto another database keeps every tick but loses the names:
         // checkinFlagDefs() falls back to a stand-in label built from the key.
@@ -29419,6 +29422,7 @@ const App = (() => {
           lifePhases: lifePhasesArr, garminDaily: garminDailyArr,
           activityRoutes: activityRoutesArr, routeSegments: routeSegmentsArr,
           checkinFlagPrefs: checkinFlagPrefsArr,
+          ratingScale: backup.wt_rating_scale ?? null,
         });
         // Reuses the same full-cache refetch as the periodic silent refresh so
         // a restore doesn't leave any newly-imported table stale in memory.

@@ -109,11 +109,23 @@ app.use((req, res, next) => {
   }, LAG_CHECK_MS).unref();
 }
 
-// The 10mb limit is load-bearing: POST /api/import sends the ENTIRE dataset as
+// The limits are load-bearing: POST /api/import sends the ENTIRE dataset as
 // one JSON body, and body-parser's 100kb default would reject a restore before
 // the route runs, with only a generic "Failed to restore backup" in the UI.
 // History grows ~600 bytes per workout. Story: DECISIONS.md#import-atomicity.
-app.use(express.json({ limit: '10mb' }));
+//
+// Two paths are exempt from the general 10mb. POST /api/import gets its own, far larger limit: a
+// backup carries every GPS route with its time, elevation and heart-rate
+// arrays, and a runner with a few years of outings is well past 10 MB. The
+// Apple Shortcut's push parses its own body (see its route), so that a
+// malformed or oversized one is still kept and reported on its badge instead
+// of dying here as Express's generic HTML 400.
+const jsonBody = express.json({ limit: '10mb' });
+const importJsonBody = express.json({ limit: '200mb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/apple-health/sync') return next();
+  return (req.path === '/api/import' ? importJsonBody : jsonBody)(req, res, next);
+});
 
 // Sends a large, rarely-changing text body gzipped to any client that accepts
 // it (index.html is ~1.5 MB, ~0.45 MB gzipped, and the phone often launches
@@ -318,11 +330,7 @@ app.patch('/api/users/:id', (req, res) => {
     // updateUser fails, the worst case must be credentials still in place,
     // never an active user with both connections destroyed.
     if (fields.archived === true && !existing.archived) {
-      deleteGarminCredentialsFile(id);
-      wipeTokenStore(id);
-      deleteAppleToken(id);
-      db.clearGarminSyncStatus(id);
-      db.clearAppleSyncStatus(id);
+      revokeSyncConnections(id);
     }
 
     res.json(updated);
@@ -388,12 +396,14 @@ app.patch('/api/routines/:id', (req, res) => {
     }
     const { name, emoji, position, target_per_week } = req.body || {};
     const fields = {};
+    // `?? ''`, as PATCH /api/users/:id does: an explicit null is a blank
+    // name (a 400) or the default emoji, never a TypeError's 500.
     if (name !== undefined) {
-      const trimmed = name.toString().trim();
+      const trimmed = (name ?? '').toString().trim();
       if (!trimmed) return res.status(400).json({ error: 'Name is required' });
       fields.name = trimmed;
     }
-    if (emoji !== undefined) fields.emoji = emoji.toString();
+    if (emoji !== undefined) fields.emoji = (emoji ?? '').toString() || '🏋️';
     if (position !== undefined) fields.position = parseInt(position, 10);
     // null clears the target. Anything else must be a real sessions-per-week
     // number — a string "1" is refused rather than coerced, like a 0, since
@@ -882,19 +892,58 @@ app.delete('/api/history/:id', (req, res) => {
 // half-refilled. Everything in here must stay SYNCHRONOUS — an `await` would
 // commit early and run the rest outside the transaction. verify_dedup.js
 // asserts this at the source. Story: DECISIONS.md#import-atomicity.
+// WHICH RATING SCALE A BACKUP IS ON. Backups now say (ratingScale: 10);
+// older ones don't, and most of those are on 1-10 already. So an unmarked
+// backup is only rescaled when its own values prove the old scales: a 0 in an
+// evening 0-5 rating (1-10 has no 0) and nothing anywhere above 5. A backup
+// that proves neither is restored as it is, which is all a restore ever did.
+function legacyRatingScale(rowsByTable) {
+  let sawZero = false;
+  for (const [table, col, oldMin] of db.RATING_SCALE_COLUMNS) {
+    for (const row of Array.isArray(rowsByTable[table]) ? rowsByTable[table] : []) {
+      const v = row?.[col];
+      if (typeof v !== 'number') continue;
+      if (v > 5) return false;
+      if (oldMin === 0 && v === 0) sawZero = true;
+    }
+  }
+  return sawZero;
+}
+function rescaleRatingRows(rows, table) {
+  if (!Array.isArray(rows)) return rows;
+  const cols = db.RATING_SCALE_COLUMNS.filter(([t]) => t === table);
+  return rows.map(row => {
+    const out = { ...row };
+    for (const [, col, oldMin] of cols) if (typeof out[col] === 'number') out[col] = db.rescaleRatingTo10(out[col], oldMin);
+    return out;
+  });
+}
+
 app.post('/api/import', (req, res) => {
   try {
-    const { routines, lifts, schedule, plans, history, replaceHistory,
+    let { routines, lifts, schedule, plans, history, replaceHistory,
              bodyweight, checkins, activityTypes, users, exerciseCategoryOverrides, exerciseFormNotes,
              exerciseWeightless, exerciseMuscles, exercisePatterns, exerciseTimed,
              exerciseUnranked, exerciseDefaults,
              goals, injuries, injuryCheckins, pregnancyInfo, pregnancyMilestones,
-             lifePhases, garminDaily, activityRoutes, routeSegments, checkinFlagPrefs } = req.body;
+             lifePhases, garminDaily, activityRoutes, routeSegments, checkinFlagPrefs, ratingScale } = req.body;
     // Restore is scoped to ONE user at a time, same as every other route —
     // see db.addHistory's comment for why a row's own embedded user_id
     // (present since export is a plain SELECT *) is deliberately ignored
     // rather than trusted.
     const userId = getUserId(req);
+    // A backup from before the 1-10 rating scales comes back on 1-10, the
+    // rescale migrateRatingScalesTo10 gave the live database.
+    const oldScale = ratingScale !== 10 && legacyRatingScale({ checkins, injuries, injury_checkins: injuryCheckins });
+    if (oldScale) {
+      checkins = rescaleRatingRows(checkins, 'checkins');
+      injuries = rescaleRatingRows(injuries, 'injuries');
+      injuryCheckins = rescaleRatingRows(injuryCheckins, 'injury_checkins');
+    }
+    // Users this restore ARCHIVES. Revoked after the commit, as PATCH
+    // /api/users/:id does after its write: deleting credentials cannot be
+    // rolled back, so it must never happen for a restore that then fails.
+    const newlyArchived = [];
 
     db.transaction(() => {
 
@@ -1050,7 +1099,11 @@ app.post('/api/import', (req, res) => {
       // users is global like activityTypes, not scoped to the restoring
       // user — see the comment on the users table's CREATE TABLE.
       if (Array.isArray(users)) {
-        for (const row of users) db.restoreUser(row);
+        const wasArchived = new Map(db.getUsers().map(u => [u.id, !!u.archived]));
+        for (const row of users) {
+          db.restoreUser(row);
+          if (row?.archived && wasArchived.get(row.id) === false) newlyArchived.push(row.id);
+        }
       }
 
       // The seven name-keyed exercise attributes, restored from ONE list — see
@@ -1163,10 +1216,15 @@ app.post('/api/import', (req, res) => {
         }
       }
       if (Array.isArray(injuryCheckins)) {
+        // Fall back to the raw id for a partial import that carries
+        // injuryCheckins without the injuries array to remap against -- but
+        // only onto THIS user's injuries. Injury ids are one sequence shared
+        // by every user, so an unchecked raw id could overwrite someone
+        // else's follow-ups.
+        const ownInjuryIds = new Set(db.getInjuries(userId).map(i => i.id));
         for (const row of injuryCheckins) {
-          // Fall back to the raw id for a partial import that carries
-          // injuryCheckins without the injuries array to remap against.
-          db.restoreInjuryCheckin(row, injuryIdMap[row?.injury_id] ?? row?.injury_id);
+          const injuryId = injuryIdMap[row?.injury_id] ?? (ownInjuryIds.has(row?.injury_id) ? row.injury_id : null);
+          if (injuryId != null) db.restoreInjuryCheckin(row, injuryId);
         }
       }
 
@@ -1226,6 +1284,10 @@ app.post('/api/import', (req, res) => {
       }
       db.seedExerciseDefaultsFromRoutines();
     });
+
+    // The same revocation as archiving through the People card: a hidden user
+    // must never keep syncing.
+    for (const id of newlyArchived) revokeSyncConnections(id);
 
     res.json({ ok: true });
   } catch (e) {
@@ -1793,7 +1855,7 @@ app.post('/api/activity-photos/:externalId',
       let stamp = Date.now();
       if (req.query.taken !== undefined) {
         const taken = String(req.query.taken);
-        const ms = /^[0-9]{13}$/.test(taken) ? Number(taken) : NaN;
+        const ms = /^[0-9]{12,13}$/.test(taken) ? Number(taken) : NaN;
         if (!(ms >= PHOTO_TAKEN_MIN_MS && ms <= Date.now() + PHOTO_TAKEN_SLACK_MS)) {
           return res.status(400).json({ error: 'taken must be a capture time in epoch milliseconds' });
         }
@@ -2991,6 +3053,16 @@ function deleteAppleToken(userId) {
   const p = appleTokenFilePath(userId);
   if (fs.existsSync(p)) fs.unlinkSync(p);
 }
+// Archiving's other half: both sync connections and their outcomes go, so a
+// user hidden from every picker is never synced. Shared by PATCH
+// /api/users/:id and a restore that archives someone (POST /api/import).
+function revokeSyncConnections(userId) {
+  deleteGarminCredentialsFile(userId);
+  wipeTokenStore(userId);
+  deleteAppleToken(userId);
+  db.clearGarminSyncStatus(userId);
+  db.clearAppleSyncStatus(userId);
+}
 function resolveUserIdByAppleToken(token) {
   if (!token) return null;
   const uid = readAppleTokensIndex()[token];
@@ -3123,67 +3195,75 @@ function syncActivitiesForUser(activities, userId, sourceLabel) {
   let merged    = 0;
   let refreshed = 0;
 
-  for (const activity of activities) {
-    const bestEfforts = sanitizeBestEfforts(activity.bestEfforts);
-    if (bestEfforts) activity.bestEfforts = bestEfforts; else delete activity.bestEfforts;
-    const deviceFields = { ...sanitizeTrainingEffect(activity), ...(bestEfforts ? { bestEfforts } : {}) };
+  // ONE transaction for the batch. Each write was its own commit, and with
+  // synchronous=FULL each commit is an fsync on the main thread: a 2,000-
+  // workout Health export stalled every request in the house for most of a
+  // minute. All or nothing is also the better failure: a throw part-way used
+  // to leave half a batch stored, and nothing is lost by a whole one being
+  // retried, since every row is matched on its external id.
+  db.transaction(() => {
+    for (const activity of activities) {
+      const bestEfforts = sanitizeBestEfforts(activity.bestEfforts);
+      if (bestEfforts) activity.bestEfforts = bestEfforts; else delete activity.bestEfforts;
+      const deviceFields = { ...sanitizeTrainingEffect(activity), ...(bestEfforts ? { bestEfforts } : {}) };
 
-    // Every type a device sends gets an activity_types row (a no-op if known),
-    // whether or not this activity is imported, so the "categorize this"
-    // reminder always has the complete list.
-    db.ensureActivityType(activity.type);
+      // Every type a device sends gets an activity_types row (a no-op if known),
+      // whether or not this activity is imported, so the "categorize this"
+      // reminder always has the complete list.
+      db.ensureActivityType(activity.type);
 
-    // Skip if THIS USER already stored this external id. Per user because
-    // Apple's external_id may be a synthesized `type+start-time`, which two
-    // people who trained together can share.
-    //
-    // The DEVICE-ONLY fields (measured splits, training load and effect) are
-    // still written onto the stored row: no form edits them, and it is how a
-    // deep --limit sync backfills them.
-    if (activity.external_id && db.hasExternalId(activity.external_id, userId)) {
-      if (db.refreshDeviceFields(activity.external_id, userId, deviceFields)) refreshed++;
-      skipped++;
-      continue;
+      // Skip if THIS USER already stored this external id. Per user because
+      // Apple's external_id may be a synthesized `type+start-time`, which two
+      // people who trained together can share.
+      //
+      // The DEVICE-ONLY fields (measured splits, training load and effect) are
+      // still written onto the stored row: no form edits them, and it is how a
+      // deep --limit sync backfills them.
+      if (activity.external_id && db.hasExternalId(activity.external_id, userId)) {
+        if (db.refreshDeviceFields(activity.external_id, userId, deviceFields)) refreshed++;
+        skipped++;
+        continue;
+      }
+
+      // Only auto-resolves when the match is unambiguous (see
+      // db.findLikelyDuplicate); otherwise both entries are kept as-is.
+      const candidates = db.findManualCandidates(activity.date, activity.type, userId);
+      const dup = db.findLikelyDuplicate(candidates, activity);
+
+      if (dup && !MANUAL_WINS_TYPES.includes(activity.type)) {
+        if (activity.note == null && dup.note != null) activity.note = dup.note;
+        if (activity.rpe  == null && dup.rpe  != null) activity.rpe  = dup.rpe;
+        // The typed title too; Garmin's own label is `name`, not `title`.
+        if (activity.title == null && dup.title) activity.title = dup.title;
+        // And the snow tags, which only a person can judge.
+        if (activity.snow == null && dup.snow) activity.snow = dup.snow;
+        if (activity.grooming == null && dup.grooming) activity.grooming = dup.grooming;
+        console.log(`${sourceLabel} sync: merging manual entry #${dup.id} ("${dup.name || dup.type}", ${dup.date}) into synced activity ${activity.external_id} — kept note/RPE/title/snow`);
+        // ATOMIC: this deletes the manual entry — the only copy of its note and
+        // RPE — and inserts the synced one; a throw between must lose nothing.
+        // A niggle linked to the manual entry (injuries.history_id) moves to
+        // the synced row inside the same transaction.
+        db.transaction(() => {
+          db.deleteHistory(dup.id);
+          const newId = db.addHistory(activity, {}, userId);
+          db.relinkInjuries(dup.id, newId);
+        });
+        merged++;
+        imported++;
+      } else if (dup) {
+        // The device's load and training effect still come across: Garmin's own
+        // totals include this session, so dropping them hides a session its load
+        // counts. Everything else about the duplicate is discarded.
+        const carried = db.addDeviceFieldsToManual(dup.id, userId, deviceFields);
+        console.log(`${sourceLabel} sync: keeping manual entry #${dup.id} ("${dup.name || dup.type}", ${dup.date}) — discarding bare ${sourceLabel} duplicate ${activity.external_id}${carried ? ', device fields carried over' : ''}`);
+        if (carried) refreshed++;
+        merged++;
+      } else {
+        db.addHistory(activity, {}, userId);
+        imported++;
+      }
     }
-
-    // Only auto-resolves when the match is unambiguous (see
-    // db.findLikelyDuplicate); otherwise both entries are kept as-is.
-    const candidates = db.findManualCandidates(activity.date, activity.type, userId);
-    const dup = db.findLikelyDuplicate(candidates, activity);
-
-    if (dup && !MANUAL_WINS_TYPES.includes(activity.type)) {
-      if (activity.note == null && dup.note != null) activity.note = dup.note;
-      if (activity.rpe  == null && dup.rpe  != null) activity.rpe  = dup.rpe;
-      // The typed title too; Garmin's own label is `name`, not `title`.
-      if (activity.title == null && dup.title) activity.title = dup.title;
-      // And the snow tags, which only a person can judge.
-      if (activity.snow == null && dup.snow) activity.snow = dup.snow;
-      if (activity.grooming == null && dup.grooming) activity.grooming = dup.grooming;
-      console.log(`${sourceLabel} sync: merging manual entry #${dup.id} ("${dup.name || dup.type}", ${dup.date}) into synced activity ${activity.external_id} — kept note/RPE/title/snow`);
-      // ATOMIC: this deletes the manual entry — the only copy of its note and
-      // RPE — and inserts the synced one; a throw between must lose nothing.
-      // A niggle linked to the manual entry (injuries.history_id) moves to
-      // the synced row inside the same transaction.
-      db.transaction(() => {
-        db.deleteHistory(dup.id);
-        const newId = db.addHistory(activity, {}, userId);
-        db.relinkInjuries(dup.id, newId);
-      });
-      merged++;
-      imported++;
-    } else if (dup) {
-      // The device's load and training effect still come across: Garmin's own
-      // totals include this session, so dropping them hides a session its load
-      // counts. Everything else about the duplicate is discarded.
-      const carried = db.addDeviceFieldsToManual(dup.id, userId, deviceFields);
-      console.log(`${sourceLabel} sync: keeping manual entry #${dup.id} ("${dup.name || dup.type}", ${dup.date}) — discarding bare ${sourceLabel} duplicate ${activity.external_id}${carried ? ', device fields carried over' : ''}`);
-      if (carried) refreshed++;
-      merged++;
-    } else {
-      db.addHistory(activity, {}, userId);
-      imported++;
-    }
-  }
+  });
 
   return { imported, skipped, merged, refreshed };
 }
@@ -3493,12 +3573,36 @@ function sortAppleWorkouts(items, userId) {
   return { fresh, known, rejected, garminCopies, twins };
 }
 
-app.post('/api/apple-health/sync', express.raw({ type: () => true, limit: '10mb' }), (req, res) => {
+// The body is read here rather than by the global JSON parser (see it), after
+// the token check, so every push from a known Shortcut leaves a trace: an
+// unreadable or oversized one sets the badge instead of failing unseen.
+const appleSyncBody = express.raw({ type: () => true, limit: '10mb' });
+app.post('/api/apple-health/sync', (req, res, next) => {
   const userId = resolveUserIdByAppleToken(req.query.token);
   if (!userId) return res.status(401).json({ error: 'Unknown or revoked sync token' });
+  appleSyncBody(req, res, err => {
+    if (!err) return next();
+    const message = err.type === 'entity.too.large'
+      ? 'Received, but the push was over 10 MB, so nothing was imported'
+      : "Received, but the push couldn't be read, so nothing was imported";
+    db.setAppleSyncStatus(userId, { ok: false, message });
+    res.status(err.status || 400).json({ error: message });
+  });
+}, (req, res) => {
+  const userId = resolveUserIdByAppleToken(req.query.token);
   keepApplePayload(userId, req);
   try {
-    const body = Buffer.isBuffer(req.body) ? null : req.body;
+    // Only a JSON push is read; any other content type stays "no list", as
+    // before. Unparseable JSON is its own failure, with the raw text kept.
+    let body = null;
+    if (Buffer.isBuffer(req.body) && req.is('json')) {
+      try { body = JSON.parse(req.body.toString('utf8')); }
+      catch {
+        const message = "Received, but it wasn't valid JSON (the raw push was saved on the server)";
+        db.setAppleSyncStatus(userId, { ok: false, message });
+        return res.status(400).json({ error: message });
+      }
+    }
     let activities = body?.activities;
     let rejected = 0, garminCopies = 0, known = 0;
     if (!Array.isArray(activities) && body?.workouts !== undefined) {
@@ -3654,12 +3758,15 @@ function importAppleExport(parsed, userId) {
   const { fresh, known, rejected, garminCopies, twins } = sortAppleWorkouts(items, userId);
   const result = syncActivitiesForUser(fresh.map(f => f.record), userId, 'Apple export');
   let routes = 0, badRoutes = 0;
-  for (const { item, record, externalId } of [...fresh, ...known]) {
-    const target = externalId || record.external_id;
-    if (!item.route || !db.hasExternalId(target, userId) || db.getActivityRoute(target, userId)) continue;
-    if (storeActivityRoute({ ...item.route, external_id: target }, userId)) badRoutes++;
-    else routes++;
-  }
+  // One commit for all the routes, for the reason syncActivitiesForUser gives.
+  db.transaction(() => {
+    for (const { item, record, externalId } of [...fresh, ...known]) {
+      const target = externalId || record.external_id;
+      if (!item.route || !db.hasExternalId(target, userId) || db.getActivityRoute(target, userId)) continue;
+      if (storeActivityRoute({ ...item.route, external_id: target }, userId)) badRoutes++;
+      else routes++;
+    }
+  });
   if (routes) fillActivityWeather();
   const unreadable = rejected + (Number(parsed?.unreadable) || 0);
   return `Imported ${result.imported} workout${result.imported === 1 ? '' : 's'}`
