@@ -83,7 +83,8 @@ is baked into the image.
 The Map tab's **Quests** mode lists the named trails near your home base (the
 📌 pinned map view, or where most of your outings are) that you haven't
 covered, or haven't covered in the last two years. It scores each trail by
-how much of its length your GPS routes cover.
+how much of its length your GPS routes cover. **⚙ → Time range** changes how
+far back an outing counts: all time, or the last 1 to 4 years.
 
 The trails come from [OpenStreetMap](https://www.openstreetmap.org), through
 the public [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)
@@ -95,7 +96,8 @@ It never sends your pin, your routes or who you are. The answer is cached in
 A trail missing from the list is usually missing a name in OpenStreetMap.
 [OpenTrailMap](https://opentrailmap.us) is a good way to see what's mapped
 near you, and anyone can fix it on openstreetmap.org. Press **↻ Refresh**
-under the list to pick up the change.
+under the list to pick up the change. The Pi asks OpenStreetMap again at most
+once an hour per area, and says when it can next.
 
 ## Optional: Garmin Connect sync
 

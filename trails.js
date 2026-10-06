@@ -30,7 +30,7 @@ const KM_PER_DEG = 111.32;
 
 // Bumped whenever trailsFromOverpass changes what it returns. server.js puts
 // it in the cache file's name, so an older file is MISSING, never served.
-const TRAILS_FORMAT = 1;
+const TRAILS_FORMAT = 2;   // 2: pieces split at every fork, even inside a way
 
 // Trails shorter than this are left out: a named 80 m connector is not a quest.
 const MIN_TRAIL_M = 300;
@@ -78,9 +78,10 @@ function areaFor(lat, lon) {
 // its parts inside the box. Ways first, with geometry; then the routes, with
 // their member lists, so trailsFromOverpass can tell whose ways are whose.
 //
-// maxsize makes an oversized answer fail on Overpass's side, never by
-// filling the Pi's memory. A smaller declared timeout than the default makes
-// the server likelier to accept the query at all.
+// maxsize caps the memory OVERPASS may use for the query, not the size of
+// the answer; fetchTrailArea caps that (MAX_ANSWER_BYTES). A smaller declared
+// timeout than the default makes the server likelier to accept the query at
+// all.
 function overpassQuery(bbox) {
   const [s, w, n, e] = bbox;
   return `[out:json][timeout:90][maxsize:268435456][bbox:${s},${w},${n},${e}];
@@ -118,7 +119,8 @@ const nameKey = s => cleanName(s).toLowerCase();
 
 // One way's drawable pieces: its points split wherever Overpass gave no
 // coordinate (it sends null for a node it could not place), with the node id
-// at each end so pieces can be stitched.
+// of every point (null when Overpass sent none) so pieces can be split at
+// forks and stitched.
 function wayPieces(el) {
   const out = [];
   const geom = Array.isArray(el.geometry) ? el.geometry : [];
@@ -126,40 +128,77 @@ function wayPieces(el) {
   let cur = null;
   geom.forEach((g, i) => {
     if (!g || !Number.isFinite(g.lat) || !Number.isFinite(g.lon)) { cur = null; return; }
-    if (!cur) out.push(cur = { pts: [], a: nodes ? nodes[i] : null, b: null });
+    if (!cur) out.push(cur = { pts: [], nodes: [] });
     cur.pts.push([round5(g.lat), round5(g.lon)]);
-    cur.b = nodes ? nodes[i] : null;
+    cur.nodes.push(nodes ? nodes[i] : null);
   });
   return out.filter(p => p.pts.length >= 2);
 }
 
+// One trail's pieces cut at every FORK, so that every place three or more
+// lines meet is a piece END. OSM need not split a way where another joins it
+// partway (a T) or crosses it, and the browser's coverage (coverRuns) only
+// carries a walk across pieces at their ends. A node counts as a fork when it
+// appears more than once among the pieces: a second way's end or middle, or
+// the same way passing through it again.
+function splitAtForks(pieces) {
+  const seen = new Map();
+  for (const p of pieces) for (const n of p.nodes) if (n != null) seen.set(n, (seen.get(n) || 0) + 1);
+  const out = [];
+  for (const p of pieces) {
+    let from = 0;
+    for (let i = 1; i < p.pts.length - 1; i++) {
+      if (p.nodes[i] == null || seen.get(p.nodes[i]) < 2) continue;
+      out.push({ pts: p.pts.slice(from, i + 1), nodes: p.nodes.slice(from, i + 1) });
+      from = i;
+    }
+    out.push(from ? { pts: p.pts.slice(from), nodes: p.nodes.slice(from) } : p);
+  }
+  return out;
+}
+
 // Pieces joined end to end wherever exactly two of them meet at a node, so a
 // trail OSM split at every bridge and junction is drawn, sampled and dashed
-// as a few long lines rather than dozens of short ones.
+// as a few long lines rather than dozens of short ones. One pass: each chain
+// is walked from an end that is not such a JOINT, then what is left (loops
+// made only of joints) from anywhere.
 function stitch(pieces) {
-  let list = pieces.map(p => ({ ...p, pts: p.pts.slice() }));
-  for (let changed = true; changed;) {
-    changed = false;
-    const at = new Map();
-    list.forEach((p, i) => {
-      for (const n of [p.a, p.b]) if (n != null) { const l = at.get(n) || []; l.push(i); at.set(n, l); }
-    });
-    for (const [n, idx] of at) {
-      if (idx.length !== 2 || idx[0] === idx[1]) continue;
-      let [p, q] = [list[idx[0]], list[idx[1]]];
-      if (!p || !q) continue;
-      // Orient so p ends at n and q starts at n.
-      if (p.a === n) p = { a: p.b, b: p.a, pts: p.pts.slice().reverse() };
-      if (q.b === n) q = { a: q.b, b: q.a, pts: q.pts.slice().reverse() };
-      if (p.b !== n || q.a !== n) continue;
-      list[idx[0]] = { a: p.a, b: q.b, pts: p.pts.concat(q.pts.slice(1)) };
-      list[idx[1]] = null;
-      changed = true;
-      break;
+  const ends = pieces.map(p => [p.nodes[0], p.nodes[p.nodes.length - 1]]);
+  const at = new Map();   // node -> [[piece, end]], end 0 = start, 1 = finish
+  ends.forEach((e, i) => e.forEach((n, k) => {
+    if (n == null) return;
+    if (!at.has(n)) at.set(n, []);
+    at.get(n).push([i, k]);
+  }));
+  const joint = n => {
+    const l = n != null && at.get(n);
+    return !!l && l.length === 2 && l[0][0] !== l[1][0];
+  };
+  const used = new Array(pieces.length).fill(false);
+  const walk = (i, enter) => {
+    const pts = [];
+    for (;;) {
+      used[i] = true;
+      const seq = enter === 0 ? pieces[i].pts : pieces[i].pts.slice().reverse();
+      for (let k = pts.length ? 1 : 0; k < seq.length; k++) pts.push(seq[k]);
+      const exit = ends[i][1 - enter];
+      if (!joint(exit)) break;
+      const [x, y] = at.get(exit);
+      const [j, k] = x[0] === i ? y : x;
+      if (used[j]) break;
+      i = j;
+      enter = k;
     }
-    list = list.filter(Boolean);
-  }
-  return list.map(p => p.pts);
+    return pts;
+  };
+  const out = [];
+  pieces.forEach((_, i) => {
+    if (used[i]) return;
+    if (!joint(ends[i][0])) out.push(walk(i, 0));
+    else if (!joint(ends[i][1])) out.push(walk(i, 1));
+  });
+  pieces.forEach((_, i) => { if (!used[i]) out.push(walk(i, 0)); });
+  return out;
 }
 
 function boundsOf(pieces) {
@@ -196,7 +235,7 @@ function components(ways) {
 }
 
 function makeTrail(id, name, kind, route, osm, ways) {
-  const pieces = stitch(ways.flatMap(w => w.pieces));
+  const pieces = stitch(splitAtForks(ways.flatMap(w => w.pieces)));
   const length_m = Math.round(pieces.reduce((m, p) => m + lineM(p), 0));
   if (length_m < MIN_TRAIL_M || !pieces.length) return null;
   return { id, name, kind, route, osm, pieces, length_m, bounds: boundsOf(pieces) };
@@ -208,10 +247,12 @@ function makeTrail(id, name, kind, route, osm, ways) {
 // only form the browser ever passes to a handler. pieces are [[lat, lon], ...]
 // at 5 decimals, as plain arrays: no new polyline encoder to keep in step.
 //
-// A NAME GROUP LYING WHOLLY INSIDE A ROUTE OF THE SAME NAME IS THAT ROUTE and
-// is dropped. One inside a route of ANOTHER name keeps its own quest: "Salt
-// Creek Trail" stays a quest when it is also a stretch of a long regional
-// route. Pure.
+// A NAMED WAY INSIDE A ROUTE OF THE SAME NAME IS THAT ROUTE, and is left out
+// of the name's path quests: what is left of the name (a spur the relation
+// missed) is a quest of its own only if it is still MIN_TRAIL_M long, and
+// never draws over the route. One inside a route of ANOTHER name keeps its
+// own quest: "Salt Creek Trail" stays a quest when it is also a stretch of a
+// long regional route. Pure.
 function trailsFromOverpass(json) {
   const els = json && Array.isArray(json.elements) ? json.elements : [];
   const ways = new Map();
@@ -259,10 +300,9 @@ function trailsFromOverpass(json) {
     if (!byName.has(k)) byName.set(k, []);
     byName.get(k).push(w);
   }
-  for (const [k, list] of byName) {
+  for (const [k, all] of byName) {
+    const list = all.filter(w => !(routeOf.get(w.id) || []).some(r => r.key === k));
     for (const group of components(list)) {
-      const sameRoute = group.every(w => (routeOf.get(w.id) || []).some(r => r.key === k));
-      if (sameRoute) continue;
       const first = Math.min(...group.map(w => w.id));
       const t = makeTrail(`w${first}`, group[0].name, 'path', null, { type: 'way', id: first }, group);
       if (t) out.push(t);
@@ -279,13 +319,47 @@ function overpassFailed(json) {
     || (typeof json.remark === 'string' && /runtime error|timed out|out of memory/i.test(json.remark));
 }
 
+// The largest answer the Pi will read, about 15x a dense 46 km box. Past it
+// the area fails (tooLarge) rather than the Pi holding and parsing the lot.
+const MAX_ANSWER_BYTES = 64 * 1024 * 1024;
+
+function tooLarge(url) {
+  const e = new Error(`${url}: the answer is over ${MAX_ANSWER_BYTES >> 20} MB`);
+  e.tooLarge = true;
+  return e;
+}
+
+// The body as text, stopping as soon as it passes MAX_ANSWER_BYTES. A fake
+// fetch in a harness, with no stream, is read whole.
+async function readCapped(res, url) {
+  const declared = Number(res.headers && typeof res.headers.get === 'function' && res.headers.get('content-length'));
+  if (declared > MAX_ANSWER_BYTES) throw tooLarge(url);
+  if (!res.body || typeof res.body.getReader !== 'function') return res.text();
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_ANSWER_BYTES) {
+      reader.cancel().catch(() => {});
+      throw tooLarge(url);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 const USER_AGENT = 'CatholicWorkoutJournal/1.0 (self-hosted; +https://github.com/trabaey/catholic-workout-journal)';
 
 // Asks each server in turn. A 429, a 5xx, a timeout or a partial answer moves
 // on to the next; a 400 or 406 stops at once, since every server would refuse
 // the same query (a 406 is a missing User-Agent, which the public instance
-// has refused since 2026). The error says which: `rateLimited` when any
-// server answered 429, `fatal` for a query or configuration fault.
+// has refused since 2026), and so does an answer over MAX_ANSWER_BYTES, which
+// every server would send alike. The error says which: `rateLimited` when any
+// server answered 429, `fatal` for a query or configuration fault, `tooLarge`
+// for the area itself.
 async function fetchTrailArea(query, { urls, fetchImpl = fetch, timeoutMs = 120000 } = {}) {
   let last = new Error('no Overpass server configured');
   let rateLimited = false;
@@ -314,7 +388,13 @@ async function fetchTrailArea(query, { urls, fetchImpl = fetch, timeoutMs = 1200
       continue;
     }
     let json;
-    try { json = await res.json(); } catch (e) { last = new Error(`${url}: unreadable answer`); continue; }
+    try {
+      json = JSON.parse(await readCapped(res, url));
+    } catch (e) {
+      if (e.tooLarge) throw e;
+      last = new Error(`${url}: unreadable answer`);
+      continue;
+    }
     if (overpassFailed(json)) { last = new Error(`${url}: ${json && json.remark || 'no elements'}`); continue; }
     return json;
   }
