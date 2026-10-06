@@ -95,7 +95,8 @@ It never sends your pin, your routes or who you are. The answer is cached in
 A trail missing from the list is usually missing a name in OpenStreetMap.
 [OpenTrailMap](https://opentrailmap.us) is a good way to see what's mapped
 near you, and anyone can fix it on openstreetmap.org. Press **↻ Refresh**
-under the list to pick up the change.
+under the list to pick up the change. The Pi asks OpenStreetMap again at most
+once an hour per area, and says when it can next.
 
 ## Optional: Garmin Connect sync
 

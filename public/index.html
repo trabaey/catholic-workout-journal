@@ -30508,7 +30508,8 @@ const App = (() => {
   // the pieces that are left meet at its forks, and a walk through a fork is
   // one walk: measured piece by piece, a 30 m piece between two forks that
   // you walked straight through was "too short" and drew as a lone dot.
-  // Ends match exactly: stitch() works on shared OSM nodes, rounded alike.
+  // Ends match exactly: trails.js cuts a trail's pieces at every fork, even
+  // one partway along a way, and stitches on shared OSM nodes, rounded alike.
   function coverRuns(cov, test) {
     const runs = [];
     for (let i = 0; i < cov.n;) {
@@ -30542,18 +30543,26 @@ const App = (() => {
   }
 
   // ONE TRAIL'S COVERAGE, per sample, before any radius is applied: sample i
-  // lies on piece pi[i] from a[i] to b[i] metres along it, homeM[i] from home,
-  // and was last covered by outing route[i] (an index into index.ids/dates,
-  // newest first), or -1. Piece p's samples are first[p]..last[p] (-1 for a
-  // piece too short to sample) and its ends' keys are ends[p], for
-  // coverRuns. `home` is [lat, lon]. Runs of cover shorter than minRunM are
-  // cleared here, and then gaps up to maxGapM between what is left are
-  // filled, so questSummary only ever adds up. Pure, self-contained apart
-  // from EARTH_R_M and coverRuns, and exported for testing.
+  // lies on piece pi[i] from a[i] to b[i] metres along it, at sy[i]/sx[i] on
+  // the index's flat plane, and was last covered by outing route[i] (an index
+  // into index.ids/dates, newest first), or -1. Piece p's samples are
+  // first[p]..last[p] (-1 for a piece too short to sample) and its ends' keys
+  // are ends[p], for coverRuns. With `home` ([lat, lon]) homeM[i], the
+  // distance from it, is filled too; questsFor fills it separately
+  // (questHomeM), so moving home never redoes the matching.
+  //
+  // Metres ALONG a piece are haversineM's, as trackStretch cuts the dashes
+  // and trails.js measures length_m, so on a long piece far from the area's
+  // centre the dashes still land where the coverage was measured. The flat
+  // plane is only for matching, where its error is the same for the trail and
+  // the track.
+  //
+  // Runs of cover shorter than minRunM are cleared here, and then short gaps
+  // filled (below), so questSummary only ever adds up. Pure, self-contained
+  // apart from EARTH_R_M, haversineM and coverRuns, and exported for testing.
   function trailCoverage(trail, index, home, { stepM, nearM, minCos, minRunM, maxGapM } = QUEST_MATCH) {
     const { ky, kx, cellM, buckets } = index;
-    const hy = (home[0] - index.lat) * ky, hx = (home[1] - index.lon) * kx;
-    const pi = [], a = [], b = [], homeM = [], route = [], first = [], last = [];
+    const pi = [], a = [], b = [], sy = [], sx = [], route = [], first = [], last = [];
     const ends = trail.pieces.map(pts => [pts[0], pts[pts.length - 1]].map(q => `${q[0]},${q[1]}`));
     trail.pieces.forEach((pts, p) => {
       first[p] = route.length;
@@ -30563,56 +30572,105 @@ const App = (() => {
         const [uy, ux] = P[k], [vy, vx] = P[k + 1];
         const len = Math.hypot(vy - uy, vx - ux);
         if (!len) continue;
+        const lenM = haversineM(pts[k], pts[k + 1]);
         const dy = (vy - uy) / len, dx = (vx - ux) / len;
-        const steps = Math.max(1, Math.round(len / stepM)), step = len / steps;
+        const steps = Math.max(1, Math.round(lenM / stepM)), step = len / steps, stepAlong = lenM / steps;
         for (let q = 0; q < steps; q++) {
-          const sy = uy + dy * step * (q + 0.5), sx = ux + dx * step * (q + 0.5);
+          const y = uy + dy * step * (q + 0.5), x = ux + dx * step * (q + 0.5);
           let hit = -1;
-          const cell = buckets.get(Math.floor(sy / cellM) * 100000 + Math.floor(sx / cellM));
+          const cell = buckets.get(Math.floor(y / cellM) * 100000 + Math.floor(x / cellM));
           if (cell) {
             for (const g of cell) {
               const gy = index.y2[g] - index.y1[g], gx = index.x2[g] - index.x1[g];
               const L2 = gy * gy + gx * gx;
               if (!L2) continue;
-              const f = Math.max(0, Math.min(1, ((sy - index.y1[g]) * gy + (sx - index.x1[g]) * gx) / L2));
-              if (Math.hypot(sy - index.y1[g] - f * gy, sx - index.x1[g] - f * gx) > nearM) continue;
+              const f = Math.max(0, Math.min(1, ((y - index.y1[g]) * gy + (x - index.x1[g]) * gx) / L2));
+              if (Math.hypot(y - index.y1[g] - f * gy, x - index.x1[g] - f * gx) > nearM) continue;
               if (Math.abs(gy * dy + gx * dx) / Math.sqrt(L2) < minCos) continue;
               hit = index.route[g];
               break;   // segments are newest first: this is the newest visit
             }
           }
-          pi.push(p); a.push(along + step * q); b.push(along + step * (q + 1));
-          homeM.push(Math.hypot(sy - hy, sx - hx)); route.push(hit);
+          pi.push(p); a.push(along + stepAlong * q); b.push(along + stepAlong * (q + 1));
+          sy.push(y); sx.push(x); route.push(hit);
         }
-        along += len;
+        along += lenM;
       }
       last[p] = route.length - 1;
       if (last[p] < first[p]) first[p] = last[p] = -1;
     });
-    const cov = { id: trail.id, n: route.length, pi, a, b, homeM, route, first, last, ends };
+    const cov = { id: trail.id, n: route.length, pi, a, b, sy, sx, route, first, last, ends };
     // Clear covered runs shorter than minRunM, through the trail's forks.
     for (const g of coverRuns(cov, i => route[i] >= 0)) {
       if (g.lengthM < minRunM) for (const k of g.samples) route[k] = -1;
     }
-    // Then fill gaps up to maxGapM, within one piece, that have cover on
-    // both sides, or on one side and the piece's end on the other (a
-    // junction). After the clearing, so a fill only ever bridges cover that
-    // already counts and can't lift a half-block run past minRunM. A filled
-    // gap takes the OLDER visit beside it (the larger index), so it never
-    // looks fresher than the walking around it. A piece with no cover at
-    // all is left alone: a short stub nobody walked is still uncharted.
-    for (let i = 0; i < route.length;) {
-      if (route[i] >= 0) { i++; continue; }
-      let j = i;
-      while (j + 1 < route.length && route[j + 1] < 0 && pi[j + 1] === pi[i]) j++;
-      const before = i > 0 && pi[i - 1] === pi[i] ? route[i - 1] : -1;
-      const after = j + 1 < route.length && pi[j + 1] === pi[i] ? route[j + 1] : -1;
-      if (b[j] - a[i] <= maxGapM && (before >= 0 || after >= 0)) {
-        for (let k = i; k <= j; k++) route[k] = Math.max(before, after);
+    // Then fill short UNCOVERED runs. After the clearing, so a fill only
+    // ever bridges cover that already counts and can't lift a half-block run
+    // past minRunM. A run's side is the sample beside it on its piece or, at
+    // the piece's end, the cover reaching that point on the trail's other
+    // pieces. Filled:
+    //   - cover on both sides, up to maxGapM: a bend the track cut, or a
+    //     short piece between two forks it went straight through;
+    //   - cover on one side and a FORK on the other (more pieces end there),
+    //     up to maxGapM: the track turned there and missed a sample or three;
+    //   - cover on one side and the trail's OPEN END on the other, only up to
+    //     nearM, about one sample missed turning onto the trail. Any more is
+    //     a dead end you stopped short of, and stays uncharted.
+    // Two passes: runs within a piece first, judged on the cover as it stood
+    // after the clearing, then whole pieces, which need cover at BOTH ends
+    // and are judged on the first pass's result, since a corner cut through
+    // a short piece usually misses the start of the next one too. So a stub
+    // nobody walked, with cover at one end at most, stays uncharted. A
+    // filled run takes the OLDER visit beside it (the larger index), so it
+    // never looks fresher than the walking around it.
+    const endCount = new Map(), atEnd = new Map();   // an end's key -> pieces ending there; -> [piece, its sample there]
+    ends.forEach(([k0, k1], p) => {
+      for (const k of [k0, k1]) endCount.set(k, (endCount.get(k) || 0) + 1);
+      if (first[p] < 0) return;
+      for (const [k, i] of [[k0, first[p]], [k1, last[p]]]) {
+        if (!atEnd.has(k)) atEnd.set(k, []);
+        atEnd.get(k).push([p, i]);
       }
-      i = j + 1;
+    });
+    for (const whole of [false, true]) {
+      const base = route.slice();
+      const reach = (key, p) => {
+        let v = -1;
+        for (const [o, i] of atEnd.get(key) || []) if (o !== p && base[i] > v) v = base[i];
+        return v;
+      };
+      for (let i = 0; i < base.length;) {
+        if (base[i] >= 0) { i++; continue; }
+        const p = pi[i];
+        let j = i;
+        while (j + 1 < base.length && base[j + 1] < 0 && pi[j + 1] === p) j++;
+        const fromStart = i === first[p], toEnd = j === last[p];
+        if ((fromStart && toEnd) === whole) {
+          const before = fromStart ? reach(ends[p][0], p) : base[i - 1];
+          const after = toEnd ? reach(ends[p][1], p) : base[j + 1];
+          const lenM = b[j] - a[i];
+          let fill = false;
+          if (before >= 0 && after >= 0) fill = lenM <= maxGapM;
+          else if (!whole && (before >= 0 || after >= 0)) {
+            const open = before >= 0 ? ends[p][1] : ends[p][0];
+            fill = lenM <= (endCount.get(open) >= 2 ? maxGapM : nearM);
+          }
+          if (fill) for (let k = i; k <= j; k++) route[k] = Math.max(before, after);
+        }
+        i = j + 1;
+      }
     }
+    if (home) cov.homeM = questHomeM(cov, index, home);
     return cov;
+  }
+
+  // Each of a coverage's samples' distance from home ([lat, lon]), on the
+  // index's plane: cheap, so questsFor redoes only this when home moves.
+  function questHomeM(cov, index, home) {
+    const hy = (home[0] - index.lat) * index.ky, hx = (home[1] - index.lon) * index.kx;
+    const out = new Float64Array(cov.n);
+    for (let i = 0; i < cov.n; i++) out[i] = Math.hypot(cov.sy[i] - hy, cov.sx[i] - hx);
+    return out;
   }
 
   // A trail's numbers INSIDE THE RING of `radiusM` around home, so the
@@ -32221,9 +32279,9 @@ const App = (() => {
   const QUEST_TRACE_COLOR = '#0cb1e8';
   const QUEST_ICONS = { uncharted: '✦', faded: '⌛', partial: '👣', conquered: '🏆' };
   const TRAIL_POLL_MS = 5000;
-  // After ↻ Refresh, how long to keep asking for the new file: the server
-  // answers with the old one at once and fetches behind it.
-  const TRAIL_REFRESH_WAIT_MS = 2 * 60 * 1000;
+  // After ↻ Refresh, how long to keep asking how the fetch is going: two
+  // servers at up to two minutes each, plus a queue behind another area.
+  const TRAIL_REFRESH_WAIT_MS = 5 * 60 * 1000;
   const QUEST_MONTH = new Intl.DateTimeFormat('default', { month: 'short', year: 'numeric' });
 
   // THE HOME BASE: the 📌 pin's centre. Without a pin, the middle of the
@@ -32273,6 +32331,12 @@ const App = (() => {
   // TRAIL_POLL_MS while Quests is on screen. Leaving stops the asking; coming
   // back starts it again (ensureTrailArea). A home that moves to another area
   // replaces trailArea, and an answer for the old one is dropped.
+  //
+  // ↻ REFRESH sets refreshFrom, and while it is set each ask is a refresh=1,
+  // which the server answers with how the fetch is going rather than the
+  // file: 'refreshing' asks again; 'recent' after that means the new file is
+  // in, so one plain ask fetches it; 'recent' or 'held' straight away means
+  // the server turned the refresh down, and a toast says why and until when.
   async function loadTrailArea({ refresh = false } = {}) {
     const home = questHome();
     if (!home) return;
@@ -32286,7 +32350,9 @@ const App = (() => {
       trailArea.error = null;
     }
     const mine = trailArea;
-    if (refresh && mine.data) mine.refreshFrom = { at: Date.now(), fetched_at: mine.data.fetched_at };
+    if (mine.refreshFrom && Date.now() - mine.refreshFrom.at > TRAIL_REFRESH_WAIT_MS) mine.refreshFrom = null;
+    if (refresh && mine.data && !mine.refreshFrom) mine.refreshFrom = { at: Date.now(), started: false };
+    const asking = !!mine.refreshFrom;
     const state = () => `${mine.status}|${mine.data ? mine.data.fetched_at : ''}|${!!mine.refreshFrom}`;
     const before = state();
     const again = () => {
@@ -32298,7 +32364,7 @@ const App = (() => {
     mine.inFlight = true;
     let r;
     try {
-      r = await api.get(`/api/trails?lat=${lat}&lon=${lon}${refresh ? '&refresh=1' : ''}`);
+      r = await api.get(`/api/trails?lat=${lat}&lon=${lon}${asking ? '&refresh=1' : ''}`);
     } catch (e) {
       mine.inFlight = false;
       if (trailArea !== mine) return;
@@ -32311,13 +32377,29 @@ const App = (() => {
     if (trailArea !== mine) return;
     if (r && r.status === 'fetching') {
       again();
+    } else if (r && r.status === 'refreshing') {
+      if (mine.refreshFrom && !mine.refreshFrom.started) {
+        mine.refreshFrom.started = true;
+        showToast('Checking OpenStreetMap for changes. The list updates when they arrive.');
+      }
+      again();
+    } else if (r && (r.status === 'recent' || r.status === 'held')) {
+      const started = !!(mine.refreshFrom && mine.refreshFrom.started);
+      mine.refreshFrom = null;
+      afterTrailLoad();
+      if (started && r.status === 'recent') { loadTrailArea(); return; }
+      const until = Number.isFinite(r.retry_at)
+        ? ` Try again after ${new Date(r.retry_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : '';
+      if (r.status === 'recent') showToast(`These trails were checked less than an hour ago.${until}`);
+      else {
+        const why = typeof r.error === 'string' && r.error ? r.error : 'Couldn\'t reach OpenStreetMap\'s trail server.';
+        showToast(/try again/i.test(why) ? why : `${why}${until}`, true);
+      }
+      return;
     } else if (r && Array.isArray(r.trails) && r.area && Array.isArray(r.area.bbox)) {
       mine.status = 'ready';
       mine.data = { ...r, trails: r.trails.filter(questTrailValid) };
-      if (mine.refreshFrom) {
-        if (r.fetched_at !== mine.refreshFrom.fetched_at || Date.now() - mine.refreshFrom.at > TRAIL_REFRESH_WAIT_MS) mine.refreshFrom = null;
-        else again();
-      }
+      mine.refreshFrom = null;
     } else if (!mine.data) {
       mine.status = 'error';
       mine.error = 'The trail server sent something unreadable.';
@@ -32335,45 +32417,69 @@ const App = (() => {
   }
 
   // Starts the load unless it is done, failed (Retry is the user's call),
-  // or already being asked for.
+  // or already being asked for. A ↻ Refresh left unfinished when Quests went
+  // off screen is not done: it is picked up again here.
   function ensureTrailArea() {
     const home = questHome();
     if (!home) return;
     const { key } = questAreaOf(home);
     if (trailArea && trailArea.key === key
-        && (trailArea.status !== 'loading' || trailArea.inFlight || trailPollTimer)) return;
+        && (trailArea.inFlight || trailPollTimer || trailArea.status === 'error'
+            || (trailArea.status === 'ready' && !trailArea.refreshFrom))) return;
     loadTrailArea();
   }
 
   // The date key QUEST_MATCH.freshDays before today: on or after it is
   // explored, before it has faded. Through dateKey, never toISOString.
   function questCutoff() {
-    const d = new Date();
-    d.setDate(d.getDate() - QUEST_MATCH.freshDays);
-    return dateKey(d);
+    return shiftDateKey(dateKey(new Date()), -QUEST_MATCH.freshDays);
+  }
+
+  // Whether a trail's bounds reach the box around the ring of radiusM about
+  // home. By hand, so it needs no Leaflet; a trail without usable bounds
+  // always does.
+  function questTrailNear(trail, home, radiusM) {
+    const bd = trail.bounds;
+    if (!Array.isArray(bd) || bd.length !== 4 || !bd.every(Number.isFinite)) return true;
+    const dLat = radiusM / (EARTH_R_M * Math.PI / 180);
+    const dLon = dLat / Math.max(0.01, Math.cos(home.lat * Math.PI / 180));
+    return bd[0] <= home.lat + dLat && bd[2] >= home.lat - dLat && bd[1] <= home.lon + dLon && bd[3] >= home.lon - dLon;
   }
 
   // Every trail in the ring with its numbers, nearest first and the
   // conquered last: [{ trail, sum }]. The coverage (the slow part) is
-  // memoised on the trails, the routes cache, the chips and the home; the
-  // radius and the cutoff only re-add it up. null until the trails are in.
+  // memoised on the trails, the routes cache and the chips, per trail, and
+  // worked out only for the trails that reach the ring, as a ring first takes
+  // them in. Moving home only re-measures each sample's distance from it
+  // (questHomeM); the radius and the cutoff only re-add it up. null until the
+  // trails are in.
   function questsFor() {
     if (!trailArea || trailArea.status !== 'ready' || !trailArea.data) return null;
     const home = questHome();
     if (!home) return null;
     const data = trailArea.data;
     const types = mapTypeFilter ? [...mapTypeFilter].sort().join(',') : '*';
-    const key = [trailArea.key, data.fetched_at, home.lat, home.lon, types].join('|');
+    const key = [trailArea.key, data.fetched_at, types].join('|');
     if (!questMemo || questMemo.key !== key || questMemo.src !== activityRoutesCache) {
       const index = questIndex(routesMatching(activityRoutesCache || [], null, mapTypeFilter), data.area);
-      questMemo = { key, src: activityRoutesCache, index, sums: new Map(),
-                    covs: data.trails.map(t => ({ trail: t, cov: trailCoverage(t, index, [home.lat, home.lon]) })) };
+      questMemo = { key, src: activityRoutesCache, index, covs: new Map(), home: null, homeMs: null, sums: null };
+    }
+    const homeKey = `${home.lat},${home.lon}`;
+    if (questMemo.home !== homeKey) {
+      questMemo.home = homeKey;
+      questMemo.homeMs = new Map();
+      questMemo.sums = new Map();
     }
     const cutoff = questCutoff(), skey = `${questRadiusKm}|${cutoff}`;
     if (!questMemo.sums.has(skey)) {
       const list = [];
-      for (const { trail, cov } of questMemo.covs) {
-        const sum = questSummary(cov, questMemo.index, questRadiusKm * 1000, cutoff);
+      for (const trail of data.trails) {
+        if (!questTrailNear(trail, home, questRadiusKm * 1000)) continue;
+        let cov = questMemo.covs.get(trail.id);
+        if (!cov) questMemo.covs.set(trail.id, cov = trailCoverage(trail, questMemo.index));
+        let homeM = questMemo.homeMs.get(trail.id);
+        if (!homeM) questMemo.homeMs.set(trail.id, homeM = questHomeM(cov, questMemo.index, [home.lat, home.lon]));
+        const sum = questSummary({ ...cov, homeM }, questMemo.index, questRadiusKm * 1000, cutoff);
         if (sum) list.push({ trail, sum });
       }
       const done = q => (q.sum.status === 'conquered' ? 1 : 0);
@@ -32435,6 +32541,7 @@ const App = (() => {
       return;
     }
     const quests = questsFor() || [];
+    pruneQuestSelection(quests);
     const won = quests.filter(q => q.sum.status === 'conquered').length;
     const open = quests.length - won;
     const head = `<div class="quest-head"><span>🧭 <b>${open}</b> trail quest${open === 1 ? '' : 's'} within ${questRadiusKm} km${
@@ -32460,6 +32567,12 @@ const App = (() => {
       trailArea.refreshFrom ? 'Checking…' : '↻ Refresh'}</span>`;
     el.innerHTML = mapPanelHTML(head, rows, foot);
     renderQuestPanel();
+  }
+
+  // The open quest, unless it has left the list (a smaller ring, another
+  // home, other chips): then none is, so nothing is drawn dimmed for it.
+  function pruneQuestSelection(quests) {
+    if (mapSelectedQuestId !== null && !quests.some(q => q.trail.id === mapSelectedQuestId)) mapSelectedQuestId = null;
   }
 
   function markSelectedQuestRow() {
@@ -32533,6 +32646,7 @@ const App = (() => {
         fillOpacity: 1, renderer: mapMarkerRenderer, interactive: false }).addTo(mapInstance));
 
     const quests = questsFor() || [];
+    pruneQuestSelection(quests);
     const ordered = [...quests.filter(q => q.trail.id !== mapSelectedQuestId),
                      ...quests.filter(q => q.trail.id === mapSelectedQuestId)];
     let activeLine = null;
@@ -32780,13 +32894,13 @@ const App = (() => {
   }
 
   // ↻ Refresh under the list, or Try again after a failure. The server
-  // refetches at most hourly, so a second press soon after is harmless.
+  // refetches at most hourly and says so, and loadTrailArea's toast passes
+  // that on, so a second press soon after is harmless.
   function refreshTrails() {
     const failed = trailArea && trailArea.status === 'error';
     loadTrailArea({ refresh: !failed });
-    if (failed) { renderMapDetail(); syncMapSize(); return; }
-    showToast('Checking OpenStreetMap for changes. The list updates when they arrive.');
     renderMapDetail();
+    if (failed) syncMapSize();
   }
 
   // One of the open segment's efforts, traced on the map under the segment
@@ -34807,7 +34921,7 @@ const App = (() => {
     // Exported for testing: a trail's coverage is a computation the Quests
     // panel only ever shows the conclusion of, and the cases that matter (a
     // crossing, a visit three years ago) are easiest built synthetically.
-    questIndex, trailCoverage, questSummary, questStatus,
+    questIndex, trailCoverage, questHomeM, questSummary, questStatus,
     showHistorySubTab, toggleAnalyticsSection, showAnalyticsTab, toggleNeedsDataHint,
     setMapMode, toggleMapType, setMapWindow, toggleMapMenu, toggleMapLegend, mapBack,
     selectMapRoute, openActivityRoute, fitAllRoutes,
