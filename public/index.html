@@ -2848,7 +2848,10 @@ const App = (() => {
     catch (e) { return fallback; }
   }
 
-  let sessionData     = storedJSON('wt_temp_progress', {});
+  // Workout drafts, PER USER (sessionDraftKey), so on a shared device one
+  // person's half-logged run is never offered to the next person to save as
+  // theirs. Loaded by init(), once the user is known.
+  let sessionData     = {};
 
   // Ticks the running lift-session timer's mm:ss display once a second.
   // Global rather than started/stopped per render: renderLift() rebuilds its
@@ -2931,8 +2934,16 @@ const App = (() => {
   // X-User-Id on every request so server.js knows whose data to read/write.
   // The few raw fetch() calls outside this client (syncGarmin's Garmin
   // trigger, the photo uploads) add the header by hand — see their comments.
+  //
+  // THE ID IS FIXED PER TAB ONCE THE TAB BOOTS (bootedUserId). localStorage
+  // is shared by every tab, so reading it per request let a second tab's
+  // Switch user re-point this one: a tab still showing Mom's data and drafts
+  // then saved into Dad's account, and sent no header at all (user 1 on the
+  // server) while the other tab sat at the picker. Before boot there is only
+  // the stored value to go on.
   const ACTIVE_USER_KEY = 'wt_active_user';
-  function getActiveUserId() { return localStorage.getItem(ACTIVE_USER_KEY); }
+  let bootedUserId = null;
+  function getActiveUserId() { return bootedUserId ?? localStorage.getItem(ACTIVE_USER_KEY); }
   function userHeaders(extra) {
     const id = getActiveUserId();
     return id ? { 'X-User-Id': id, ...extra } : { ...extra };
@@ -3086,7 +3097,8 @@ const App = (() => {
   const jsArg = str =>
     escapeHTML(String(str ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, '\\n'));
 
-  const persist    = ()  => localStorage.setItem('wt_temp_progress', JSON.stringify(sessionData));
+  const sessionDraftKey = () => `wt_temp_progress_${getActiveUserId()}`;
+  const persist    = ()  => localStorage.setItem(sessionDraftKey(), JSON.stringify(sessionData));
 
   // Session drafts (sessionData) persist in localStorage until a workout is
   // completed. An abandoned draft would otherwise resurface forever and mask
@@ -6112,7 +6124,22 @@ const App = (() => {
       body: odd.join('\n') + '\n\nCancel to go back and fix a typo.', action: 'Save anyway' });
   }
 
-  async function saveLiftSession(ld) {
+  // Set for the length of a Complete, so a double tap can't POST the same
+  // workout twice: the draft is only deleted once the first POST resolves,
+  // and POST /api/history has no natural key to refuse a duplicate (two rows
+  // double the day's tonnage and load, and a drafted injury is logged twice).
+  // Same guard as workoutInjurySaving. One flag for both savers: only one
+  // Complete button is on screen at a time.
+  let sessionSaving = false;
+  async function withSessionSaving(save) {
+    if (sessionSaving) return;
+    sessionSaving = true;
+    try { await save(); } finally { sessionSaving = false; }
+  }
+  const saveLiftSession = ld => withSessionSaving(() => saveLiftSessionNow(ld));
+  const saveActivitySession = (key, type, name) => withSessionSaving(() => saveActivitySessionNow(key, type, name));
+
+  async function saveLiftSessionNow(ld) {
     // Checked first, so a blocked save leaves the session exactly as it was.
     const newInjury = pendingNewInjury(sessionData[ld], 'niggle');
     if (newInjury?.error) { showToast(newInjury.error, 'hint'); return; }
@@ -6520,7 +6547,7 @@ const App = (() => {
     if (field === 'duration') refreshLiftCompleteLabel(key);
   }
 
-  async function saveActivitySession(key, type, name) {
+  async function saveActivitySessionNow(key, type, name) {
     const s = sessionData[key] || {};
     // A rest day has no "Anything hurt?" section, so nothing to read there.
     const isRest = type === REST_TYPE.value;
@@ -9308,6 +9335,7 @@ const App = (() => {
     const routineIds = [...new Set(exerciseRowsFor(oldName).map(r => r.ld))];
     const savedIn = [];
     let failedIn = null;
+    let failErr = null;
     for (const ld of routineIds) {
       const before = lifts[ld].slice();
       lifts[ld] = lifts[ld].map(ex => ex.name.trim() === oldName ? { ...newEx } : ex);
@@ -9317,6 +9345,7 @@ const App = (() => {
       } catch (e) {
         lifts[ld] = before;
         failedIn = ld;
+        failErr = e;
         break;
       }
     }
@@ -9330,12 +9359,13 @@ const App = (() => {
         await api.put(`/api/exercise-defaults/${encodeURIComponent(newEx.name)}`, savedDefaults);
       } catch (e) {
         failedIn = 'defaults';
+        failErr = e;
       }
     }
     // Nothing landed: the popup stays open with everything still typed in it.
     if (failedIn !== null && !savedIn.length) {
       renderSettings();
-      showToast(failMessage('save your changes', e, "They're still here, so tap Save again."), true);
+      showToast(failMessage('save your changes', failErr, "They're still here, so tap Save again."), true);
       return;
     }
     exerciseDefaults[defaultsKey] = savedDefaults;
@@ -33617,6 +33647,11 @@ const App = (() => {
   })();
 
   async function init() {
+    // The one shared key drafts used before they were per user. Whose draft
+    // it holds is unknowable, so it is dropped rather than handed to whoever
+    // boots first.
+    localStorage.removeItem('wt_temp_progress');
+    sessionData = storedJSON(sessionDraftKey(), {});
     purgeStaleDrafts();
     purgeCheckinDrafts();
     try {
@@ -33737,7 +33772,7 @@ const App = (() => {
     // person forever with nothing to notice it.
     const choosable = list.filter(u => !u.archived);
     const stored = getActiveUserId();
-    if (stored && choosable.some(u => String(u.id) === stored)) { init(); return; }
+    if (stored && choosable.some(u => String(u.id) === stored)) { bootedUserId = stored; init(); return; }
     // Cleared rather than left to rot: it is the reason the picker is showing,
     // and leaving it behind would make the next load take the dead path again.
     if (stored) localStorage.removeItem(ACTIVE_USER_KEY);
@@ -33750,6 +33785,7 @@ const App = (() => {
 
   function chooseUser(id) {
     localStorage.setItem(ACTIVE_USER_KEY, String(id));
+    bootedUserId = String(id);
     document.getElementById('user-gate').style.display = 'none';
     // Not just hidden — removed. A hidden-but-present button with an onclick
     // stays a real element for the rest of the page's life (until a full
