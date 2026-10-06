@@ -510,9 +510,9 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
    takes the room the short ones don't need), and the labels shrink a step
    below 400px and another below 340px, where the menus also drop their ▾.
    Measured: no label clips from 320px up. */
-@media (max-width: 400px) { .map-modes .map-mode-btn { font-size: 13px; letter-spacing: -0.01em; } }
+@media (max-width: 400px) { .map-modes .map-mode-btn { font-size: var(--fs-caption); letter-spacing: -0.01em; } }
 @media (max-width: 340px) {
-  .map-modes .map-mode-btn { font-size: 12px; padding: 6px 2px; }
+  .map-modes .map-mode-btn { font-size: var(--fs-caption); padding: 6px 2px; }
   .map-pick-btn .win-caret { display: none; }
   .map-controls { gap: 4px; }
 }
@@ -30438,6 +30438,9 @@ const App = (() => {
   // beside it counts as covered, for a track that cuts a bend or turns at a
   // junction and misses a sample or three of a trail it plainly followed --
   // each of which otherwise drew as a lone rose dot on a walked trail.
+  // `minDrawM`: an unexplored stretch shorter than this is not DRAWN (the
+  // numbers still count it), so what is left over beside walked trail never
+  // shows as a stray dash.
   //
   // 30 m like SEGMENT_MATCH: GPS, the 8 m simplification and OSM's own drawing
   // each add a few metres, and wider would let a parallel path cover this one.
@@ -30450,7 +30453,7 @@ const App = (() => {
   // of a shorter trail.
   //
   // `cellM`: the coverage index's grid, in metres on its flat projection.
-  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80, freshDays: 730,
+  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80, minDrawM: 100, freshDays: 730,
                         doneShare: 0.8, touchShare: 0.1, minVisitM: 200, cellM: 100 };
 
   // THE COVERAGE INDEX for one area: every segment of every outing that
@@ -30625,7 +30628,7 @@ const App = (() => {
   // { id, date } of the newest VISIT on or after the cutoff and before it.
   // Pure, and exported for testing.
   function questSummary(cov, index, radiusM, cutoff,
-                        { stepM, minRunM, minVisitM, doneShare, touchShare } = QUEST_MATCH) {
+                        { stepM, minRunM, minVisitM, minDrawM, doneShare, touchShare } = QUEST_MATCH) {
     let totalM = 0, freshM = 0, everM = 0, nearest = Infinity;
     const perRoute = new Map();
     const fresh = i => cov.route[i] >= 0 && index.dates[cov.route[i]] >= cutoff;
@@ -30656,7 +30659,8 @@ const App = (() => {
         if (last && last[0] === cov.pi[i] && cov.a[i] - last[2] <= 2 * stepM) last[2] = cov.b[i];
         else out.push([cov.pi[i], cov.a[i], cov.b[i]]);
       }
-      return out;
+      // Unexplored stretches too short to read as a line are left undrawn.
+      return want ? out : out.filter(r => r[2] - r[1] >= minDrawM);
     };
     const need = Math.min(minVisitM, 0.5 * totalM);
     let lastFresh = null, lastOld = null;
