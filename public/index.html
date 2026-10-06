@@ -505,7 +505,17 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
    its full width. */
 .map-controls { position: relative; flex: none; display: flex; gap: 6px; align-items: center; }
 .map-modes { flex: 1; min-width: 0; display: flex; gap: 2px; padding: 2px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); }
-.map-modes .map-mode-btn { flex: 1; min-width: 0; padding: 6px 2px; border: 0; background: transparent; }
+.map-modes .map-mode-btn { flex: 1 1 auto; min-width: 0; padding: 6px 3px; border: 0; background: transparent; }
+/* FOUR modes on a phone: the buttons size to their labels (so "Segments"
+   takes the room the short ones don't need), and the labels shrink a step
+   below 400px and another below 340px, where the menus also drop their ▾.
+   Measured: no label clips from 320px up. */
+@media (max-width: 400px) { .map-modes .map-mode-btn { font-size: 13px; letter-spacing: -0.01em; } }
+@media (max-width: 340px) {
+  .map-modes .map-mode-btn { font-size: 12px; padding: 6px 2px; }
+  .map-pick-btn .win-caret { display: none; }
+  .map-controls { gap: 4px; }
+}
 .map-modes .map-mode-btn.active { background: rgba(16,185,129,0.15); color: var(--brand-text); box-shadow: inset 0 0 0 1px #10b981; }
 .map-pick-btn { padding: 7px 9px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); color: var(--t2); font-family: inherit; font-size: var(--fs-emph); line-height: 1.2; cursor: pointer; white-space: nowrap; }
 .map-pick-btn.open { border-color: #0d9488; }
@@ -541,6 +551,26 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
 .map-routerow .mr-meta { color: var(--t4); font-size: var(--fs-caption); white-space: nowrap; }
 .map-routerow .mr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-routerow .mr-title { color: var(--t3); }
+/* Quests mode (renderQuestsDetail). Rose is the quests' colour on the map
+   (QUEST_COLOR); gold only for what is conquered, as everywhere. */
+.map-list-foot { flex: none; padding: 5px 10px; border-top: 1px solid var(--surface); font-size: var(--fs-micro); color: var(--t4); }
+.map-list-foot a { color: var(--t3); }
+.map-list-foot .map-card-open { margin-top: 0; }
+.quest-head { display: flex; align-items: center; justify-content: space-between; gap: 6px 10px; flex-wrap: wrap; }
+.quest-won { color: var(--gold); }
+.quest-radii { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); }
+.quest-radii button { padding: 3px 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--t3); font-family: inherit; font-size: var(--fs-caption); font-weight: 700; cursor: pointer; }
+.quest-radii button.active { background: rgba(251,113,133,0.16); color: #fda4af; box-shadow: inset 0 0 0 1px #fb7185; }
+.map-list-head .quest-hint { margin-top: 4px; }
+.quest-sub { padding: 6px 10px 4px; border-bottom: 1px solid var(--surface); font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gold); }
+.quest-row .mr-icon { display: inline-block; min-width: 1.1em; color: #fb7185; }
+.quest-row.conquered .mr-icon { color: var(--gold); }
+.quest-retry { margin-top: 10px; }
+.quest-status { margin-top: 6px; font-size: var(--fs-body); color: var(--t2); }
+.quest-status b { color: var(--t1); }
+.quest-bar { height: 6px; margin-top: 8px; border-radius: 3px; background: var(--surface); overflow: hidden; }
+.quest-bar i { display: block; height: 100%; background: #fb7185; }
+.quest-bar.conquered i { background: var(--gold); }
 /* What you picked, in the panel: a ← Back bar that stays put over a body
    that scrolls (mapOpenHTML). */
 .map-open-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--surface); }
@@ -29737,7 +29767,7 @@ const App = (() => {
   let mapRouteRenderer = null;      // route mode's canvas, with a wide hit zone -- see ROUTE_HIT_PX
   let mapMarkerLayers = [];         // the selected route's start/finish dots -- NOT lines, see clearMapLayers
   let mapMarkerRenderer = null;     // their own canvas, in a pane ABOVE the route lines
-  let mapMode = 'heat';             // 'heat' | 'route' | 'segments'
+  let mapMode = 'heat';             // 'heat' | 'route' | 'segments' | 'quests'
   let mapTypeFilter = null;         // null = every eligible type; an EMPTY set = none
   let mapSelectedId = null;         // external_id of the traced route
   let mapFocusPending = false;      // openActivityRoute: frame mapSelectedId on the next render
@@ -29750,6 +29780,16 @@ const App = (() => {
   let mapPinEl = null;              // the one holding 📌
   let mapLegendEl = null;           // the one holding Heatmap mode's key -- see renderMapLegend
   let mapLegendOpen = false;        // whether that key's sentence is showing
+  let mapSelectedQuestId = null;    // id ('r…' / 'w…') of the trail open in Quests mode
+  let trailArea = null;             // the home base's trails -- see loadTrailArea
+  let trailPollTimer = null;        // the next ask while the server is still fetching
+  let questMemo = null;             // coverage of every trail in trailArea -- see questsFor
+  let questHomeMemo = null;         // { src, result } -- see questHome
+  // The ring's radius, per browser like the map's view: a view preference,
+  // not data. Anything but one of the offered radii reads as the default.
+  const QUEST_RADIUS_KEY = 'wt_quest_radius';
+  const QUEST_RADII_KM = [5, 10, 20];
+  let questRadiusKm = (r => (QUEST_RADII_KM.includes(r) ? r : 10))(storedJSON(QUEST_RADIUS_KEY, 10));
 
   // ── Pure maths ─────────────────────────────────────────────────────────────
 
@@ -30379,6 +30419,228 @@ const App = (() => {
     });
   }
 
+  // ── Trail quests: how much of a trail your outings have covered ──────────
+  // The trails come from GET /api/trails (OpenStreetMap, see trails.js); the
+  // coverage is worked out here, from activityRoutesCache, like segment
+  // efforts: nothing about your outings ever leaves the Pi.
+  //
+  // A TRAIL IS SAMPLED EVERY `stepM` ALONG ITS LENGTH (not at its vertices,
+  // for the reason liesOn gives in sameCourse), and a sample is COVERED by an
+  // outing passing within `nearM` of it GOING THE SAME WAY: |cos| of the
+  // angle between the two at least `minCos`, either direction. Without the
+  // direction test, crossing a trail at a road covers ~60 m of it, which
+  // alone made a short trail "partly explored". `minRunM`: a covered stretch
+  // shorter than this is dropped too, for a street you ran down for half a
+  // block beside a path. It counts the nearM an outing reaches past each of
+  // its own ends, so 120 m is about 60 m actually on the trail. `maxGapM`:
+  // the other way round, an UNcovered stretch up to this long with cover
+  // beside it counts as covered, for a track that cuts a bend or turns at a
+  // junction and misses a sample or three of a trail it plainly followed --
+  // each of which otherwise drew as a lone rose dot on a walked trail.
+  //
+  // 30 m like SEGMENT_MATCH: GPS, the 8 m simplification and OSM's own drawing
+  // each add a few metres, and wider would let a parallel path cover this one.
+  //
+  // `freshDays`: covered within this is EXPLORED; covered only before it has
+  // FADED. `doneShare` of a trail's length explored conquers it; under
+  // `touchShare` it is untouched, so a trail is "partial" only when you've
+  // really been on it. `minVisitM`: an outing counts as a VISIT to the trail
+  // (its "last explored" date) only when it covered this much of it, or half
+  // of a shorter trail.
+  //
+  // `cellM`: the coverage index's grid, in metres on its flat projection.
+  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80, freshDays: 730,
+                        doneShare: 0.8, touchShare: 0.1, minVisitM: 200, cellM: 100 };
+
+  // THE COVERAGE INDEX for one area: every segment of every outing that
+  // reaches it, projected onto one flat plane centred on the area (over 25 km
+  // the error is far below nearM) and bucketed on a `cellM` grid, each
+  // segment in every cell within nearM of it, so a sample looks only in its
+  // own cell. Outings are taken NEWEST FIRST and their segments kept in that
+  // order, so the first segment a sample matches is its newest visit.
+  // `area` is the server's { lat, lon, bbox }. An outing whose stored bounds
+  // miss the area is skipped without decoding it. Pure, self-contained apart
+  // from the polyline helpers, and exported for testing.
+  function questIndex(routes, area, { nearM, cellM } = QUEST_MATCH) {
+    const ky = EARTH_R_M * Math.PI / 180, kx = ky * Math.cos(area.lat * Math.PI / 180);
+    const [s, w, n, e] = area.bbox;
+    const rs = routes.filter(r => Array.isArray(r.bounds)
+        && r.bounds[0] <= n && r.bounds[2] >= s && r.bounds[1] <= e && r.bounds[3] >= w)
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const ymax = (n - area.lat) * ky + nearM, ymin = (s - area.lat) * ky - nearM;
+    const xmax = (e - area.lon) * kx + nearM, xmin = (w - area.lon) * kx - nearM;
+    const y1 = [], x1 = [], y2 = [], x2 = [], route = [];
+    rs.forEach((r, ri) => {
+      for (const piece of trackPieces(decodePolyline(r.polyline), { breaks: r.breaks })) {
+        for (let k = 0; k < piece.length - 1; k++) {
+          const ay = (piece[k][0] - area.lat) * ky, ax = (piece[k][1] - area.lon) * kx;
+          const by = (piece[k + 1][0] - area.lat) * ky, bx = (piece[k + 1][1] - area.lon) * kx;
+          if (Math.max(ay, by) < ymin || Math.min(ay, by) > ymax
+              || Math.max(ax, bx) < xmin || Math.min(ax, bx) > xmax) continue;
+          y1.push(ay); x1.push(ax); y2.push(by); x2.push(bx); route.push(ri);
+        }
+      }
+    });
+    const buckets = new Map();
+    for (let g = 0; g < route.length; g++) {
+      const i0 = Math.floor((Math.min(y1[g], y2[g]) - nearM) / cellM), i1 = Math.floor((Math.max(y1[g], y2[g]) + nearM) / cellM);
+      const j0 = Math.floor((Math.min(x1[g], x2[g]) - nearM) / cellM), j1 = Math.floor((Math.max(x1[g], x2[g]) + nearM) / cellM);
+      for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+        const key = i * 100000 + j;
+        let b = buckets.get(key);
+        if (!b) buckets.set(key, b = []);
+        b.push(g);
+      }
+    }
+    return {
+      ky, kx, lat: area.lat, lon: area.lon, cellM, buckets,
+      y1: Float64Array.from(y1), x1: Float64Array.from(x1), y2: Float64Array.from(y2), x2: Float64Array.from(x2),
+      route: Int32Array.from(route),
+      dates: rs.map(r => r.date), ids: rs.map(r => String(r.external_id)),
+    };
+  }
+
+  // ONE TRAIL'S COVERAGE, per sample, before any radius is applied: sample i
+  // lies on piece pi[i] from a[i] to b[i] metres along it, homeM[i] from home,
+  // and was last covered by outing route[i] (an index into index.ids/dates,
+  // newest first), or -1. `home` is [lat, lon]. Runs of cover shorter than
+  // minRunM are cleared here, and then gaps up to maxGapM between what is
+  // left are filled, so questSummary only ever adds up. Pure,
+  // self-contained apart from EARTH_R_M, and exported for testing.
+  function trailCoverage(trail, index, home, { stepM, nearM, minCos, minRunM, maxGapM } = QUEST_MATCH) {
+    const { ky, kx, cellM, buckets } = index;
+    const hy = (home[0] - index.lat) * ky, hx = (home[1] - index.lon) * kx;
+    const pi = [], a = [], b = [], homeM = [], route = [];
+    trail.pieces.forEach((pts, p) => {
+      const P = pts.map(q => [(q[0] - index.lat) * ky, (q[1] - index.lon) * kx]);
+      let along = 0;
+      for (let k = 0; k < P.length - 1; k++) {
+        const [uy, ux] = P[k], [vy, vx] = P[k + 1];
+        const len = Math.hypot(vy - uy, vx - ux);
+        if (!len) continue;
+        const dy = (vy - uy) / len, dx = (vx - ux) / len;
+        const steps = Math.max(1, Math.round(len / stepM)), step = len / steps;
+        for (let q = 0; q < steps; q++) {
+          const sy = uy + dy * step * (q + 0.5), sx = ux + dx * step * (q + 0.5);
+          let hit = -1;
+          const cell = buckets.get(Math.floor(sy / cellM) * 100000 + Math.floor(sx / cellM));
+          if (cell) {
+            for (const g of cell) {
+              const gy = index.y2[g] - index.y1[g], gx = index.x2[g] - index.x1[g];
+              const L2 = gy * gy + gx * gx;
+              if (!L2) continue;
+              const f = Math.max(0, Math.min(1, ((sy - index.y1[g]) * gy + (sx - index.x1[g]) * gx) / L2));
+              if (Math.hypot(sy - index.y1[g] - f * gy, sx - index.x1[g] - f * gx) > nearM) continue;
+              if (Math.abs(gy * dy + gx * dx) / Math.sqrt(L2) < minCos) continue;
+              hit = index.route[g];
+              break;   // segments are newest first: this is the newest visit
+            }
+          }
+          pi.push(p); a.push(along + step * q); b.push(along + step * (q + 1));
+          homeM.push(Math.hypot(sy - hy, sx - hx)); route.push(hit);
+        }
+        along += len;
+      }
+    });
+    // Clear covered runs shorter than minRunM, within one piece.
+    for (let i = 0; i < route.length;) {
+      if (route[i] < 0) { i++; continue; }
+      let j = i;
+      while (j + 1 < route.length && route[j + 1] >= 0 && pi[j + 1] === pi[i]) j++;
+      if (b[j] - a[i] < minRunM) for (let k = i; k <= j; k++) route[k] = -1;
+      i = j + 1;
+    }
+    // Then fill gaps up to maxGapM, within one piece, that have cover on
+    // both sides, or on one side and the piece's end on the other (a
+    // junction). After the clearing, so a fill only ever bridges cover that
+    // already counts and can't lift a half-block run past minRunM. A filled
+    // gap takes the OLDER visit beside it (the larger index), so it never
+    // looks fresher than the walking around it. A piece with no cover at
+    // all is left alone: a short stub nobody walked is still uncharted.
+    for (let i = 0; i < route.length;) {
+      if (route[i] >= 0) { i++; continue; }
+      let j = i;
+      while (j + 1 < route.length && route[j + 1] < 0 && pi[j + 1] === pi[i]) j++;
+      const before = i > 0 && pi[i - 1] === pi[i] ? route[i - 1] : -1;
+      const after = j + 1 < route.length && pi[j + 1] === pi[i] ? route[j + 1] : -1;
+      if (b[j] - a[i] <= maxGapM && (before >= 0 || after >= 0)) {
+        for (let k = i; k <= j; k++) route[k] = Math.max(before, after);
+      }
+      i = j + 1;
+    }
+    return { id: trail.id, n: route.length, pi, a, b, homeM, route };
+  }
+
+  // A trail's numbers INSIDE THE RING of `radiusM` around home, so the
+  // length, the share explored and the km uncharted always agree with each
+  // other and with what is drawn. `cutoff` is the date key freshDays ago.
+  // Returns null for a trail with nothing inside the ring, else
+  //   { totalM, freshM, everM, nearM, share, status, lastFresh, lastOld, runs, doneRuns }
+  // with runs/doneRuns as [piece, fromM, toM] (gaps under two steps merged)
+  // for the unexplored and explored stretches, and lastFresh/lastOld as
+  // { id, date } of the newest VISIT on or after the cutoff and before it.
+  // Pure, and exported for testing.
+  function questSummary(cov, index, radiusM, cutoff,
+                        { stepM, minRunM, minVisitM, doneShare, touchShare } = QUEST_MATCH) {
+    let totalM = 0, freshM = 0, everM = 0, nearest = Infinity;
+    const perRoute = new Map();
+    const fresh = i => cov.route[i] >= 0 && index.dates[cov.route[i]] >= cutoff;
+    for (let i = 0; i < cov.n; i++) {
+      if (cov.homeM[i] < nearest) nearest = cov.homeM[i];
+      if (cov.homeM[i] > radiusM) continue;
+      const m = cov.b[i] - cov.a[i];
+      totalM += m;
+      if (cov.route[i] < 0) continue;
+      everM += m;
+      if (fresh(i)) freshM += m;
+      perRoute.set(cov.route[i], (perRoute.get(cov.route[i]) || 0) + m);
+    }
+    if (!totalM) return null;
+    // A fresh run shorter than minRunM is not "explored" either: the old
+    // visit around it may cover more than the new one does.
+    const isDone = new Array(cov.n).fill(false);
+    for (let i = 0; i < cov.n;) {
+      if (!fresh(i)) { i++; continue; }
+      let j = i;
+      while (j + 1 < cov.n && fresh(j + 1) && cov.pi[j + 1] === cov.pi[i]) j++;
+      if (cov.b[j] - cov.a[i] >= minRunM) for (let k = i; k <= j; k++) isDone[k] = true;
+      else for (let k = i; k <= j; k++) if (cov.homeM[k] <= radiusM) freshM -= cov.b[k] - cov.a[k];
+      i = j + 1;
+    }
+    const runsWhere = want => {
+      const out = [];
+      for (let i = 0; i < cov.n; i++) {
+        if (cov.homeM[i] > radiusM || isDone[i] !== want) continue;
+        const last = out[out.length - 1];
+        if (last && last[0] === cov.pi[i] && cov.a[i] - last[2] <= 2 * stepM) last[2] = cov.b[i];
+        else out.push([cov.pi[i], cov.a[i], cov.b[i]]);
+      }
+      return out;
+    };
+    const need = Math.min(minVisitM, 0.5 * totalM);
+    let lastFresh = null, lastOld = null;
+    for (const [r, m] of [...perRoute].sort((x, y) => x[0] - y[0])) {   // newest first
+      if (m < need) continue;
+      const v = { id: index.ids[r], date: index.dates[r] };
+      if (v.date >= cutoff) { if (!lastFresh) lastFresh = v; }
+      else if (!lastOld) lastOld = v;
+    }
+    const share = Math.max(0, freshM) / totalM;
+    const out = { totalM, freshM: Math.max(0, freshM), everM, nearM: nearest, share, lastFresh, lastOld,
+                  runs: runsWhere(false), doneRuns: runsWhere(true) };
+    out.status = questStatus(out, { doneShare, touchShare });
+    return out;
+  }
+
+  // 'conquered' | 'partial' | 'faded' | 'uncharted', from a questSummary.
+  // Pure, and exported for testing.
+  function questStatus({ totalM, freshM, everM }, { doneShare, touchShare } = QUEST_MATCH) {
+    if (freshM >= doneShare * totalM) return 'conquered';
+    if (freshM >= touchShare * totalM) return 'partial';
+    if (everM >= touchShare * totalM) return 'faded';
+    return 'uncharted';
+  }
+
   // Every read and write is wrapped: storage throws in a private window and
   // comes back empty with cleared site data, and neither must break the map.
   function savedMapView() {
@@ -30826,6 +31088,9 @@ const App = (() => {
     const shown = shownRoutes();
     if (mapMode !== 'heat' || !shown.length) { mapHeatIndex = null; mapHeatLayer.remove(); renderMapLegend(shown); }
     if (mapMode === 'segments') { drawSegmentLayers(shown, fit); return; }
+    // Before the empty-filter return: Quests ignores ⚙'s time range, so a
+    // range with nothing in it must not blank the trails.
+    if (mapMode === 'quests') { drawQuestLayers(fit); return; }
     if (!shown.length) return;
     let activeLine = null;   // the selected route's layer, if it is drawn
 
@@ -31130,7 +31395,7 @@ const App = (() => {
     if (!el) return;
     const mode = (m, label) => `<button type="button" class="map-mode-btn${mapMode === m ? ' active' : ''}"
         aria-pressed="${mapMode === m}" onclick="App.setMapMode('${m}')">${label}</button>`;
-    el.innerHTML = `<div class="map-modes" role="group" aria-label="Map mode">${mode('heat', 'Heatmap')}${mode('route', 'Routes')}${mode('segments', 'Segments')}</div>
+    el.innerHTML = `<div class="map-modes" role="group" aria-label="Map mode">${mode('heat', 'Heatmap')}${mode('route', 'Routes')}${mode('segments', 'Segments')}${mode('quests', 'Quests')}</div>
       <span class="map-pick" data-menu="filters"><button type="button" id="map-filter-btn" class="map-pick-btn${mapFiltersNarrowed() ? ' narrowed' : ''}"
         onclick="App.toggleMapMenu('filters')" title="Time range and activities" aria-label="Filters: time range and activities">⚙<span class="win-caret"> ▾</span></button></span>
       <span class="map-pick" data-menu="places"><button type="button" id="map-places-btn" class="map-pick-btn"
@@ -31152,8 +31417,10 @@ const App = (() => {
       : `${mapFiltersBodyHTML()}<div id="map-side-places">${mapPlacesBodyHTML()}</div>`;
   }
 
+  // In Quests mode the time range is not in play (quests look back their own
+  // two years), so it can't be what narrows the filter there.
   function mapFiltersNarrowed() {
-    return chartWindowDays('route-map', 0) !== 0 || mapTypeFilter !== null;
+    return (mapMode !== 'quests' && chartWindowDays('route-map', 0) !== 0) || mapTypeFilter !== null;
   }
 
   // OPENING A MENU IS A DOM INSERT, NEVER A RE-RENDER, as for the Analytics
@@ -31191,9 +31458,15 @@ const App = (() => {
       return `<button type="button" class="map-chip${on ? ' active' : ''}" data-type="${escapeHTML(t)}"
         onclick="App.toggleMapType('${jsArg(t)}')">${escapeHTML(meta.emoji)} ${escapeHTML(meta.label)} <span class="map-chip-count">${n}</span></button>`;
     }).join('');
+    // Quests mode keeps the activity chips (they decide which outings count)
+    // but has no time range: a trail is explored or not over QUEST_MATCH's
+    // own window, so a range here would change nothing and say otherwise.
+    const range = mapMode === 'quests'
+      ? `<div class="map-note" style="margin:0 4px 8px;">Quests count your outings from the last ${Math.round(QUEST_MATCH.freshDays / 365)} years.</div>`
+      : `<div class="map-menu-ranges">${WINDOW_CHOICES.map(c => `<button type="button" class="map-mode-btn${c.days === days ? ' active' : ''}"
+          data-days="${c.days}" title="${c.label}" onclick="App.setMapWindow(${c.days})">${c.face}</button>`).join('')}</div>`;
     return `<div class="map-menu-h">Time range</div>
-        <div class="map-menu-ranges">${WINDOW_CHOICES.map(c => `<button type="button" class="map-mode-btn${c.days === days ? ' active' : ''}"
-          data-days="${c.days}" title="${c.label}" onclick="App.setMapWindow(${c.days})">${c.face}</button>`).join('')}</div>
+        ${range}
         <div class="map-menu-h">Activities</div>
         <div class="map-menu-chips">${chips}</div>`;
   }
@@ -31877,9 +32150,10 @@ const App = (() => {
   // The panel in Routes and Segments modes: #map-open, empty until something
   // is picked, then the list under its head. The CSS hides the list while
   // #map-open has something in it (see the comment above #route-map).
-  function mapPanelHTML(head, rows) {
+  function mapPanelHTML(head, rows, foot = '') {
     return `<div id="map-open"></div>
-      <div class="map-list"><div class="map-list-head">${head}</div><div class="map-routelist">${rows}</div></div>`;
+      <div class="map-list"><div class="map-list-head">${head}</div><div class="map-routelist">${rows}</div>${
+        foot ? `<div class="map-list-foot">${foot}</div>` : ''}</div>`;
   }
 
   function markSelectedSegRow() {
@@ -31888,6 +32162,376 @@ const App = (() => {
     for (const row of el.querySelectorAll('.map-routerow')) {
       row.classList.toggle('active', mapSelectedSegId !== null && row.dataset.sid === String(mapSelectedSegId));
     }
+  }
+
+  // ── Quests mode ─────────────────────────────────────────────────────────
+  // Answers: "Which trails near home haven't I been on, or not for a couple
+  // of years?" The named trails around the home base, from OpenStreetMap
+  // (GET /api/trails), each scored on how much of it your outings have
+  // covered (trailCoverage). The map draws only what is still UNEXPLORED,
+  // as a treasure map's red dashes.
+  //
+  // Rose, not gold: --gold means an achievement and nothing else, so it is
+  // kept for 🏆 Conquered. Amber is Segments', green the selected route's.
+  const QUEST_COLOR = '#fb7185';
+  // The outings that count, faintly, under the trails: Segments mode's
+  // technique (a faint line per outing, brighter where they overlap), in the
+  // heat's cyan, so it reads as "where you've been".
+  const QUEST_TRACE_COLOR = '#0cb1e8';
+  const QUEST_ICONS = { uncharted: '✦', faded: '⌛', partial: '👣', conquered: '🏆' };
+  const TRAIL_POLL_MS = 5000;
+  // After ↻ Refresh, how long to keep asking for the new file: the server
+  // answers with the old one at once and fetches behind it.
+  const TRAIL_REFRESH_WAIT_MS = 2 * 60 * 1000;
+  const QUEST_MONTH = new Intl.DateTimeFormat('default', { month: 'short', year: 'numeric' });
+
+  // THE HOME BASE: the 📌 pin's centre. Without a pin, the middle of the
+  // main place's core, the "🏠 Home area" ⤡ Fit frames, from EVERY route
+  // rather than the filter, so a ⚙ range spent on a trip can't move home
+  // there. Its own memo, not placesFor's, which holds one filter at a time.
+  function questHome() {
+    const pin = pinnedMapView();
+    if (pin) return { lat: pin.lat, lon: pin.lng, pinned: true };
+    if (!questHomeMemo || questHomeMemo.src !== activityRoutesCache) {
+      const place = (activityRoutesCache || []).length ? routePlaces(activityRoutesCache)[0] : null;
+      const c = place && place.core;
+      questHomeMemo = { src: activityRoutesCache,
+        result: c ? { lat: (c[0][0] + c[1][0]) / 2, lon: (c[0][1] + c[1][1]) / 2, pinned: false } : null };
+    }
+    return questHomeMemo.result;
+  }
+
+  // The area the server is asked for, rounded here exactly as trails.areaFor
+  // rounds it, so the exact pin never travels, not even to the Pi's log.
+  function questAreaOf(home) {
+    const q = v => (Math.round(Math.round(v / 0.05) * 5) / 100).toFixed(2);
+    const lat = q(home.lat), lon = q(home.lon);
+    return { lat, lon, key: `${lat},${lon}` };
+  }
+
+  // A trail from the server, checked before anything renders it: only an id
+  // of the server's own shape ever reaches an inline handler, and the name is
+  // UNTRUSTED TEXT from the internet, escaped wherever it goes.
+  function questTrailValid(t) {
+    return !!t && typeof t.id === 'string' && /^[rw]\d+$/.test(t.id) && typeof t.name === 'string'
+      && t.osm && (t.osm.type === 'way' || t.osm.type === 'relation') && Number.isInteger(t.osm.id)
+      && Array.isArray(t.pieces) && t.pieces.length > 0
+      && t.pieces.every(p => Array.isArray(p) && p.length >= 2
+        && p.every(q => Array.isArray(q) && Number.isFinite(q[0]) && Number.isFinite(q[1])));
+  }
+
+  function mapOnScreen() {
+    return document.querySelector('.main-nav-btn.active')?.id === 'nav-history'
+      && document.getElementById('history-subview-map')?.style.display !== 'none';
+  }
+
+  // THE HOME BASE'S TRAILS, into trailArea:
+  //   { key, status: 'loading'|'ready'|'error', data, error, inFlight, refreshFrom }
+  // The server never makes this wait on OpenStreetMap: with nothing cached
+  // it answers 202 and starts fetching, and this asks again every
+  // TRAIL_POLL_MS while Quests is on screen. Leaving stops the asking; coming
+  // back starts it again (ensureTrailArea). A home that moves to another area
+  // replaces trailArea, and an answer for the old one is dropped.
+  async function loadTrailArea({ refresh = false } = {}) {
+    const home = questHome();
+    if (!home) return;
+    const { lat, lon, key } = questAreaOf(home);
+    clearTimeout(trailPollTimer);
+    trailPollTimer = null;
+    if (!trailArea || trailArea.key !== key) {
+      trailArea = { key, status: 'loading', data: null, error: null, inFlight: false, refreshFrom: null };
+    } else if (trailArea.status === 'error') {
+      trailArea.status = 'loading';
+      trailArea.error = null;
+    }
+    const mine = trailArea;
+    if (refresh && mine.data) mine.refreshFrom = { at: Date.now(), fetched_at: mine.data.fetched_at };
+    const state = () => `${mine.status}|${mine.data ? mine.data.fetched_at : ''}|${!!mine.refreshFrom}`;
+    const before = state();
+    const again = () => {
+      trailPollTimer = setTimeout(() => {
+        trailPollTimer = null;
+        if (trailArea === mine && mapMode === 'quests' && mapOnScreen()) loadTrailArea();
+      }, TRAIL_POLL_MS);
+    };
+    mine.inFlight = true;
+    let r;
+    try {
+      r = await api.get(`/api/trails?lat=${lat}&lon=${lon}${refresh ? '&refresh=1' : ''}`);
+    } catch (e) {
+      mine.inFlight = false;
+      if (trailArea !== mine) return;
+      mine.refreshFrom = null;
+      if (!mine.data) { mine.status = 'error'; mine.error = e.message; }
+      afterTrailLoad();
+      return;
+    }
+    mine.inFlight = false;
+    if (trailArea !== mine) return;
+    if (r && r.status === 'fetching') {
+      again();
+    } else if (r && Array.isArray(r.trails) && r.area && Array.isArray(r.area.bbox)) {
+      mine.status = 'ready';
+      mine.data = { ...r, trails: r.trails.filter(questTrailValid) };
+      if (mine.refreshFrom) {
+        if (r.fetched_at !== mine.refreshFrom.fetched_at || Date.now() - mine.refreshFrom.at > TRAIL_REFRESH_WAIT_MS) mine.refreshFrom = null;
+        else again();
+      }
+    } else if (!mine.data) {
+      mine.status = 'error';
+      mine.error = 'The trail server sent something unreadable.';
+    }
+    if (state() !== before) afterTrailLoad();
+  }
+
+  // Only once the answer changed something, so a poll that brings nothing
+  // new never rebuilds the list under the finger.
+  function afterTrailLoad() {
+    if (mapMode !== 'quests' || !mapInstance || !mapOnScreen()) return;
+    renderMapDetail();
+    syncMapSize();
+    refreshMapLayers();
+  }
+
+  // Starts the load unless it is done, failed (Retry is the user's call),
+  // or already being asked for.
+  function ensureTrailArea() {
+    const home = questHome();
+    if (!home) return;
+    const { key } = questAreaOf(home);
+    if (trailArea && trailArea.key === key
+        && (trailArea.status !== 'loading' || trailArea.inFlight || trailPollTimer)) return;
+    loadTrailArea();
+  }
+
+  // The date key QUEST_MATCH.freshDays before today: on or after it is
+  // explored, before it has faded. Through dateKey, never toISOString.
+  function questCutoff() {
+    const d = new Date();
+    d.setDate(d.getDate() - QUEST_MATCH.freshDays);
+    return dateKey(d);
+  }
+
+  // Every trail in the ring with its numbers, nearest first and the
+  // conquered last: [{ trail, sum }]. The coverage (the slow part) is
+  // memoised on the trails, the routes cache, the chips and the home; the
+  // radius and the cutoff only re-add it up. null until the trails are in.
+  function questsFor() {
+    if (!trailArea || trailArea.status !== 'ready' || !trailArea.data) return null;
+    const home = questHome();
+    if (!home) return null;
+    const data = trailArea.data;
+    const types = mapTypeFilter ? [...mapTypeFilter].sort().join(',') : '*';
+    const key = [trailArea.key, data.fetched_at, home.lat, home.lon, types].join('|');
+    if (!questMemo || questMemo.key !== key || questMemo.src !== activityRoutesCache) {
+      const index = questIndex(routesMatching(activityRoutesCache || [], null, mapTypeFilter), data.area);
+      questMemo = { key, src: activityRoutesCache, index, sums: new Map(),
+                    covs: data.trails.map(t => ({ trail: t, cov: trailCoverage(t, index, [home.lat, home.lon]) })) };
+    }
+    const cutoff = questCutoff(), skey = `${questRadiusKm}|${cutoff}`;
+    if (!questMemo.sums.has(skey)) {
+      const list = [];
+      for (const { trail, cov } of questMemo.covs) {
+        const sum = questSummary(cov, questMemo.index, questRadiusKm * 1000, cutoff);
+        if (sum) list.push({ trail, sum });
+      }
+      const done = q => (q.sum.status === 'conquered' ? 1 : 0);
+      list.sort((a, b) => done(a) - done(b) || a.sum.nearM - b.sum.nearM);
+      questMemo.sums.set(skey, list);
+    }
+    return questMemo.sums.get(skey);
+  }
+
+  function questRingBounds(home) {
+    return L.latLng(home.lat, home.lon).toBounds(questRadiusKm * 2000);
+  }
+
+  // Whether any of the ring is in view: setMapMode frames it on entry only
+  // when none is.
+  function questRingInView() {
+    const home = questHome();
+    return !mapInstance || !home || mapInstance.getBounds().intersects(questRingBounds(home));
+  }
+
+  const questKm = m => `${(m / 1000).toFixed(m < 9950 ? 1 : 0)} km`;
+
+  // What a row says after the name: how far, then what's left.
+  function questDetail({ sum }) {
+    const away = sum.nearM < 100 ? 'at home' : `${questKm(sum.nearM)} away`;
+    const pct = Math.round(sum.share * 100);
+    const what = {
+      uncharted: `${questKm(sum.totalM)} uncharted`,
+      faded: sum.lastOld ? `last explored ${QUEST_MONTH.format(parseDateKey(sum.lastOld.date))}` : 'explored long ago',
+      partial: `${pct}% explored`,
+      conquered: `${pct}% explored`,
+    }[sum.status];
+    return `${away} · ${what}`;
+  }
+
+  function questRadiusPillsHTML() {
+    return `<span class="quest-radii" role="group" aria-label="How far from home">${QUEST_RADII_KM.map(r =>
+      `<button type="button" class="${r === questRadiusKm ? 'active' : ''}" aria-pressed="${r === questRadiusKm}"
+        onclick="App.setQuestRadius(${r})">${r} km</button>`).join('')}</span>`;
+  }
+
+  // The panel: the quests in the ring, a ← Back card for the one picked
+  // (renderQuestPanel), and the data's credit and age underneath.
+  function renderQuestsDetail(el) {
+    const home = questHome();
+    if (!home) {
+      el.innerHTML = `<div class="map-empty">Press 📌 on the map to set your home base,<br>and the trails around it appear here.</div>`;
+      return;
+    }
+    ensureTrailArea();
+    const hint = home.pinned ? '' : `<div class="map-note quest-hint">Using your Home area. Press 📌 on the map to set your home base.</div>`;
+    if (!trailArea || trailArea.status === 'loading' && !trailArea.data) {
+      el.innerHTML = `<div class="map-empty">🧭 Charting the trails near your home base…<br>The first time can take a minute.</div>`;
+      return;
+    }
+    if (trailArea.status === 'error') {
+      el.innerHTML = `<div class="map-empty">Couldn't load the trails near your home base.<br>${escapeHTML(trailArea.error || '')}<br>
+        <button type="button" class="map-mode-btn quest-retry" onclick="App.refreshTrails()">Retry</button></div>`;
+      return;
+    }
+    const quests = questsFor() || [];
+    const won = quests.filter(q => q.sum.status === 'conquered').length;
+    const open = quests.length - won;
+    const head = `<div class="quest-head"><span>🧭 <b>${open}</b> trail quest${open === 1 ? '' : 's'} within ${questRadiusKm} km${
+      won ? ` · <span class="quest-won">${won} conquered</span>` : ''}</span>${questRadiusPillsHTML()}</div>${hint}`;
+    let rows = '';
+    quests.forEach((q, i) => {
+      if (q.sum.status === 'conquered' && (i === 0 || quests[i - 1].sum.status !== 'conquered')) {
+        rows += `<div class="quest-sub">🏆 Conquered</div>`;
+      }
+      rows += `<div class="map-routerow quest-row ${q.sum.status}${q.trail.id === mapSelectedQuestId ? ' active' : ''}"
+          data-qid="${escapeHTML(q.trail.id)}" onclick="App.selectQuest('${jsArg(q.trail.id)}')">
+        <span class="mr-name"><span class="mr-icon">${QUEST_ICONS[q.sum.status]}</span> ${escapeHTML(q.trail.name)}</span>
+        <span class="mr-meta">${escapeHTML(questDetail(q))}</span>
+      </div>`;
+    });
+    if (!quests.length) {
+      rows = `<div class="map-empty">No named trails within ${questRadiusKm} km on OpenStreetMap.${
+        questRadiusKm < QUEST_RADII_KM[QUEST_RADII_KM.length - 1] ? '<br>Try a wider ring.' : ''}</div>`;
+    }
+    const fetched = trailArea.data.fetched_at ? shortDate(dateKey(new Date(trailArea.data.fetched_at))) : '';
+    const foot = `Trails © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors${
+      fetched ? ` · fetched ${escapeHTML(fetched)}` : ''} · <span class="map-card-open" onclick="App.refreshTrails()">${
+      trailArea.refreshFrom ? 'Checking…' : '↻ Refresh'}</span>`;
+    el.innerHTML = mapPanelHTML(head, rows, foot);
+    renderQuestPanel();
+  }
+
+  function markSelectedQuestRow() {
+    const el = document.getElementById('map-detail');
+    if (!el) return;
+    for (const row of el.querySelectorAll('.map-routerow')) {
+      row.classList.toggle('active', mapSelectedQuestId !== null && row.dataset.qid === mapSelectedQuestId);
+    }
+  }
+
+  // The quest picked: where it stands, how far, when you were last on it
+  // (that outing one tap away), and the trail on OpenStreetMap.
+  function renderQuestPanel() {
+    const el = document.getElementById('map-open');
+    if (!el) return;
+    const q = mapSelectedQuestId && (questsFor() || []).find(x => x.trail.id === mapSelectedQuestId);
+    if (!q) { el.innerHTML = ''; return; }
+    const { trail, sum } = q;
+    const pct = Math.round(sum.share * 100);
+    const years = Math.round(QUEST_MATCH.freshDays / 365);
+    const left = Math.max(0, sum.totalM - sum.freshM);
+    const status = {
+      uncharted: `<b>Uncharted.</b> You haven't been on this one.`,
+      faded: `<b>Faded.</b> Explored before, but not in the last ${years} years.`,
+      partial: `<b>${pct}% explored</b> in the last ${years} years · ${questKm(left)} to go.`,
+      conquered: `🏆 <b>Conquered.</b> ${pct}% explored in the last ${years} years.`,
+    }[sum.status];
+    const kind = trail.kind === 'route'
+      ? ({ hiking: 'Hiking route', foot: 'Walking route', walking: 'Walking route', running: 'Running route',
+           bicycle: 'Cycling route', mtb: 'Mountain bike route', horse: 'Riding route' }[trail.route] || 'Signed route')
+      : 'Trail';
+    const visit = sum.lastFresh || sum.lastOld;
+    const osmUrl = `https://www.openstreetmap.org/${trail.osm.type === 'relation' ? 'relation' : 'way'}/${Number(trail.osm.id)}`;
+    const inRange = sum.totalM < trail.length_m - 50 ? ` (of ${questKm(trail.length_m)})` : '';
+    el.innerHTML = mapOpenHTML(`${QUEST_ICONS[sum.status]} ${escapeHTML(trail.name)}`, escapeHTML(questKm(sum.totalM)), `
+        <div class="quest-status">${status}</div>
+        <div class="quest-bar${sum.status === 'conquered' ? ' conquered' : ''}"><i style="width:${pct}%"></i></div>
+        <div class="map-card-stats">
+          <span><b>From home</b>${escapeHTML(sum.nearM < 100 ? 'at home' : questKm(sum.nearM))}</span>
+          <span><b>In the ring</b>${escapeHTML(questKm(sum.totalM) + inRange)}</span>
+          <span><b>Kind</b>${escapeHTML(kind)}</span>
+        </div>
+        <div class="map-card-actions">
+          ${visit ? `<span class="map-card-open" onclick="App.openActivityRoute('${jsArg(visit.id)}')">Last explored ${escapeHTML(displayDate(visit.date))} →</span>` : '<span></span>'}
+          <a class="map-card-open" href="${osmUrl}" target="_blank" rel="noopener">View on OpenStreetMap ↗</a>
+        </div>`);
+  }
+
+  // Quests mode's layers: the outings that count, faint; the home base and
+  // its ring; and each trail's UNEXPLORED stretches as rose dashes, one
+  // multi-polyline per trail, which is what a tap finds (nearestRouteLayer).
+  // The picked trail is drawn thicker and on top, with its explored part as
+  // a thin line so its whole shape shows. Never #22c55e, which the browser
+  // pass reads as the selected route.
+  function drawQuestLayers(fit) {
+    const home = questHome();
+    if (!home) return;
+    const ring = questRingBounds(home);
+    const cutoff = questCutoff();
+    const counted = routesMatching(activityRoutesCache || [], null, mapTypeFilter).filter(r => r.date >= cutoff
+      && Array.isArray(r.bounds) && ring.intersects([[r.bounds[0], r.bounds[1]], [r.bounds[2], r.bounds[3]]]));
+    for (const pieces of heatTracks(counted)) {
+      mapHeatLayers.push(L.polyline(piecesLatLngs(pieces), {
+        color: QUEST_TRACE_COLOR, weight: 1.5, opacity: 0.14, renderer: mapHeatRenderer, interactive: false,
+      }).addTo(mapInstance));
+    }
+    mapMarkerLayers.push(
+      L.circle([home.lat, home.lon], { radius: questRadiusKm * 1000, color: QUEST_COLOR, weight: 1.5, opacity: 0.55,
+        dashArray: '3 7', fill: false, renderer: mapMarkerRenderer, interactive: false }).addTo(mapInstance),
+      L.circleMarker([home.lat, home.lon], { radius: 6, color: '#ffffff', weight: 2, fillColor: QUEST_COLOR,
+        fillOpacity: 1, renderer: mapMarkerRenderer, interactive: false }).addTo(mapInstance));
+
+    const quests = questsFor() || [];
+    const ordered = [...quests.filter(q => q.trail.id !== mapSelectedQuestId),
+                     ...quests.filter(q => q.trail.id === mapSelectedQuestId)];
+    let activeLine = null;
+    const slice = (trail, runs) => runs.map(([p, a, b]) => trackStretch(trail.pieces[p], null, a, b)).filter(Boolean);
+    const pick = (q, e) => {
+      const hit = nearestRouteLayer(e.layerPoint);
+      mapSelectedQuestId = hit ? hit.options.questId : q.trail.id;
+      refreshMapLayers();   // already looking at it -- do not move the map
+      markSelectedQuestRow();
+      renderQuestPanel();
+    };
+    for (const q of ordered) {
+      const on = q.trail.id === mapSelectedQuestId;
+      if (on) {
+        const done = slice(q.trail, q.sum.doneRuns);
+        if (done.length) {
+          const line = L.polyline(piecesLatLngs(done), { color: QUEST_COLOR, weight: 2, opacity: 0.5,
+            renderer: mapRouteRenderer, questId: q.trail.id }).addTo(mapInstance);
+          line.on('click', e => pick(q, e));
+          mapRouteLayers.push(line);
+          activeLine = line;
+        }
+      }
+      const todo = slice(q.trail, q.sum.runs);
+      if (!todo.length) continue;
+      const dim = q.sum.status === 'conquered' ? 0.35 : 0.9;
+      const line = L.polyline(piecesLatLngs(todo), {
+        color: QUEST_COLOR, weight: on ? 5 : 3, opacity: on ? 1 : mapSelectedQuestId ? Math.min(dim, 0.4) : dim,
+        dashArray: on ? '10 6' : '6 6', lineCap: 'round', renderer: mapRouteRenderer, questId: q.trail.id,
+      }).addTo(mapInstance);
+      line.on('click', e => pick(q, e));
+      if (on) { line.bringToFront(); activeLine = activeLine ? L.featureGroup([activeLine, line]) : line; }
+      mapRouteLayers.push(line);
+    }
+    if (!fit) return;
+    if (fit === 'auto' && activeLine) {
+      mapInstance.fitBounds(activeLine.getBounds(), { padding: [48, 48] });
+      return;
+    }
+    mapInstance.fitBounds(ring, { padding: [12, 12] });
   }
 
   // Answers: "Am I getting faster on this stretch?"
@@ -31999,6 +32643,7 @@ const App = (() => {
     if (!el) return;
     clearMapProfileCursor();
     if (mapMode === 'segments') { renderSegmentsDetail(el); return; }
+    if (mapMode === 'quests') { renderQuestsDetail(el); return; }
     const shown = shownRoutes();
 
     if (!shown.length) {
@@ -32042,7 +32687,7 @@ const App = (() => {
   // switch are set again after it.
   function setMapMode(mode) {
     const keep = mapInstance ? { center: mapInstance.getCenter(), zoom: mapInstance.getZoom() } : null;
-    mapMode = ['route', 'segments'].includes(mode) ? mode : 'heat';
+    mapMode = ['route', 'segments', 'quests'].includes(mode) ? mode : 'heat';
     if (mapMode === 'heat') mapSelectedId = null;
     // Segments mode never calls renderMapSelection, the editor's usual exit.
     clearSegmentPreview();
@@ -32052,7 +32697,11 @@ const App = (() => {
     renderMapDetail();
     syncMapSize();
     if (keep) mapInstance.setView(keep.center, keep.zoom, { animate: false });
-    refreshMapLayers();
+    // The one exception to "a mode switch never moves the map": entering
+    // Quests from somewhere its ring isn't (a trip, the whole country) frames
+    // the ring, since the trails are only ever there. Anywhere near home,
+    // the view stays.
+    refreshMapLayers({ fit: mapMode === 'quests' && !questRingInView() ? 'all' : null });
   }
 
   // Picking from the list frames the segment and toggles like a route row
@@ -32067,6 +32716,36 @@ const App = (() => {
     renderSegmentPanel();
     syncMapSize();
     refreshMapLayers({ fit: was ? null : 'auto' });
+  }
+
+  // A quest from the list: framed and opened, toggling like a segment row.
+  function selectQuest(id) {
+    const was = mapSelectedQuestId === id;
+    mapSelectedQuestId = was ? null : id;
+    markSelectedQuestRow();
+    renderQuestPanel();
+    syncMapSize();
+    refreshMapLayers({ fit: was ? null : 'auto' });
+  }
+
+  // The ring's radius. Like a filter, it never moves the map.
+  function setQuestRadius(km) {
+    if (!QUEST_RADII_KM.includes(km) || km === questRadiusKm) return;
+    questRadiusKm = km;
+    try { localStorage.setItem(QUEST_RADIUS_KEY, JSON.stringify(km)); } catch (e) { /* a view preference */ }
+    renderMapDetail();
+    syncMapSize();
+    refreshMapLayers();
+  }
+
+  // ↻ Refresh under the list, or Try again after a failure. The server
+  // refetches at most hourly, so a second press soon after is harmless.
+  function refreshTrails() {
+    const failed = trailArea && trailArea.status === 'error';
+    loadTrailArea({ refresh: !failed });
+    if (failed) { renderMapDetail(); syncMapSize(); return; }
+    showToast('Checking OpenStreetMap for changes. The list updates when they arrive.');
+    renderMapDetail();
   }
 
   // One of the open segment's efforts, traced on the map under the segment
@@ -32139,6 +32818,7 @@ const App = (() => {
   function mapBack() {
     if (segmentDraft) { closeSegmentEditor(); return; }
     if (mapMode === 'segments') { if (mapSelectedSegId !== null) selectSegment(mapSelectedSegId); return; }
+    if (mapMode === 'quests') { if (mapSelectedQuestId !== null) selectQuest(mapSelectedQuestId); return; }
     if (mapSelectedId !== null) selectMapRoute(mapSelectedId);
   }
 
@@ -33093,6 +33773,8 @@ const App = (() => {
       return;
     }
     renderMapButtons();
+    // The pin is Quests' home base, so a new one moves the ring and its trails.
+    if (mapMode === 'quests') { renderMapDetail(); refreshMapLayers(); }
   }
 
   function goToPinnedView() {
@@ -34081,12 +34763,17 @@ const App = (() => {
     // assertion off the DOM would pass against an implementation that never
     // drew one. Called directly with synthetic input instead.
     renderPaceTrendRow, dateLineChartSVG, yAxisTicksSVG,
+    // Exported for testing: a trail's coverage is a computation the Quests
+    // panel only ever shows the conclusion of, and the cases that matter (a
+    // crossing, a visit three years ago) are easiest built synthetically.
+    questIndex, trailCoverage, questSummary, questStatus,
     showHistorySubTab, toggleAnalyticsSection, showAnalyticsTab, toggleNeedsDataHint,
     setMapMode, toggleMapType, setMapWindow, toggleMapMenu, toggleMapLegend, mapBack,
     selectMapRoute, openActivityRoute, fitAllRoutes,
     toggleOutingLayer, addOutingPhotos, openPhotoViewer, closePhotoViewer, stepPhotoViewer, togglePhotoViewerMenu, photoViewerOpenDay, photoViewerOpenRoute, deleteViewerPhoto, photoTakenAt, photoRoutePosition, fitMapPlace, pinMapView, goToPinnedView,
     openSegmentEditor, closeSegmentEditor, saveSegment, adjustSegment, selectSegmentEffort,
     selectSegment, openSegment, renderSegmentPanel, startSegmentRename, saveSegmentRename, deleteSegment,
+    selectQuest, setQuestRadius, refreshTrails,
     setChartWindow, toggleWindowPicker, chartWindowDays, toggleWorkingSetsMuscle, toggleRecoveryMuscle,
     renderJournalView, startJournalEdit, cancelJournalEdit, saveJournalEdit, openJournalDay,
     startJournalCheckinEdit, cancelJournalCheckinEdit, saveJournalCheckinEdit,

@@ -41,6 +41,7 @@ Then:
 | `TZ` | `.env` beside `docker-compose.yml` | **Set this.** Every date in the app means your local calendar day. Left wrong, entries logged in the evening land on tomorrow. Any [tz database name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), e.g. `Europe/London`. |
 | `WT_ALLOWED_HOSTS` | `environment:` in `docker-compose.yml` | The server only answers to IP addresses, `localhost` and private names (`.local`, `.lan`, `.home.arpa`, `.internal`, `.ts.net`). Add any other hostname you reach it by, comma-separated. |
 | Port | `ports:` in `docker-compose.yml` | Defaults to `3000`. |
+| `WT_TRAILS_API` | `environment:` in `docker-compose.yml` | The OpenStreetMap trail servers the Map tab's **Quests** mode asks, comma-separated. Set it to `off` to turn trail lookups off. If OMV manages your compose file, set it there too, since OMV regenerates the file. |
 
 ## Security: keep it on your own network
 
@@ -77,6 +78,25 @@ docker compose up -d --build
 Every change to the app needs the rebuild. Only `data/` is mounted, so the code
 is baked into the image.
 
+## Trail Quests
+
+The Map tab's **Quests** mode lists the named trails near your home base (the
+📌 pinned map view, or where most of your outings are) that you haven't
+covered, or haven't covered in the last two years. It scores each trail by
+how much of its length your GPS routes cover.
+
+The trails come from [OpenStreetMap](https://www.openstreetmap.org), through
+the public [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)
+(`overpass-api.de`, with `overpass.private.coffee` as a fallback). The Pi asks
+for one box about 46 km across around your home base, rounded to about 5 km.
+It never sends your pin, your routes or who you are. The answer is cached in
+`data/trails-*.json` for a month; delete a file to force a refetch.
+
+A trail missing from the list is usually missing a name in OpenStreetMap.
+[OpenTrailMap](https://opentrailmap.us) is a good way to see what's mapped
+near you, and anyone can fix it on openstreetmap.org. Press **↻ Refresh**
+under the list to pick up the change.
+
 ## Optional: Garmin Connect sync
 
 1. Enter your Garmin email and password under **Settings → 👤 Account & data →
@@ -112,3 +132,6 @@ private, since it identifies you. Regenerating it revokes the old one.
   `public/vendor/leaflet/`). Basemap tiles © Esri, HERE, Garmin and
   © OpenStreetMap contributors.
 - Historical weather for outings: [Open-Meteo](https://open-meteo.com).
+- Trail data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
+  (ODbL), through the Overpass API. What counts as a trail follows OSM US's
+  [OpenTrailMap](https://github.com/osmus/OpenTrailMap) rules (CC0).

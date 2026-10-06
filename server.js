@@ -7,6 +7,7 @@ const zlib    = require('zlib');
 const { execFile } = require('child_process');
 const db      = require('./db');
 const exerciseLibrary = require('./exercise_library');
+const trails  = require('./trails');
 
 const app = express();
 
@@ -4455,6 +4456,121 @@ app.get('/api/activity-weather', (req, res) => {
     res.json(out);
   } catch (e) {
     console.error('GET /api/activity-weather', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Trail quests ─────────────────────────────────────────────────────────────
+// The named trails near a home base, from OpenStreetMap through the Overpass
+// API, for the Map tab's Quests mode. trails.js builds the query and turns the
+// answer into trails; this is the plumbing around it, on the weather block's
+// model.
+//
+// WHAT LEAVES THE PI: a box about 46 km across around the home base, rounded
+// to 0.05 degrees (trails.areaFor). Never the pin, never a track, never who
+// asked. The browser rounds before it asks, too, so the exact pin never lands
+// in request-timing.log either.
+//
+// WT_TRAILS_API is the Overpass servers to ask, comma-separated, in order;
+// the second is only asked when the first fails. 'off' turns lookups off (the
+// harnesses point it at a local fake).
+const TRAILS_API = (process.env.WT_TRAILS_API
+  || 'https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter').trim();
+const TRAILS_URLS = TRAILS_API === 'off' ? [] : TRAILS_API.split(',').map(s => s.trim()).filter(Boolean);
+// A month: trails change slowly, and Overpass asks regular users to keep to
+// about a hundred queries a day across EVERY install of an app. A stale file
+// is still served at once while the refresh runs. ↻ Refresh in the panel
+// asks sooner, but never more than hourly.
+const TRAILS_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
+const TRAILS_REFRESH_MIN_MS = 60 * 60 * 1000;
+// After a failure the area is set aside, so a panel that polls can't hammer a
+// struggling server. Longer after a 429, which Overpass bans repeat offenders
+// for.
+const TRAILS_RETRY_MS = 10 * 60 * 1000;
+const TRAILS_RATE_RETRY_MS = 30 * 60 * 1000;
+
+// THE CACHE IS A FILE PER AREA under data/, like the liturgical calendar: a
+// third party's data, re-derivable at any time, so in neither backup path
+// and never in the database, which every snapshot copies whole. The FORMAT
+// is in the name, so a file trails.js no longer writes is simply missing.
+// Deleting one forces a refetch.
+const trailsCachePath = key => path.join(DATA_DIR, `trails-v${trails.TRAILS_FORMAT}-${key.replace(',', '_')}.json`);
+const trailsFileMemo = new Map();   // key -> { mtimeMs, text, fetched_at }
+
+function readTrailsCache(key) {
+  const file = trailsCachePath(key);
+  let st;
+  try { st = fs.statSync(file); } catch (e) { return null; }
+  const hit = trailsFileMemo.get(key);
+  if (hit && hit.mtimeMs === st.mtimeMs) return hit;
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    const entry = { mtimeMs: st.mtimeMs, text, fetched_at: JSON.parse(text).fetched_at || 0 };
+    trailsFileMemo.set(key, entry);
+    return entry;
+  } catch (e) {
+    return null;   // a truncated file is no file; the next fetch replaces it
+  }
+}
+
+// ONE OVERPASS REQUEST AT A TIME across every area: the public servers limit
+// concurrent queries per address. A second area queues behind the first;
+// the same area asked twice shares one request.
+const trailsPending = new Map();    // key -> promise
+const trailsHeld = new Map();       // key -> { until, error }
+let trailsChain = Promise.resolve();
+
+function startTrailsFetch(area) {
+  if (trailsPending.has(area.key)) return;
+  const held = trailsHeld.get(area.key);
+  if (held && held.until > Date.now()) return;
+  const job = trailsChain.then(async () => {
+    if (shuttingDown) return;
+    const started = Date.now();
+    try {
+      const json = await trails.fetchTrailArea(trails.overpassQuery(area.bbox), { urls: TRAILS_URLS });
+      const list = trails.trailsFromOverpass(json);
+      if (shuttingDown) return;
+      writeFileAtomic(trailsCachePath(area.key), JSON.stringify({
+        format: trails.TRAILS_FORMAT, area, fetched_at: Date.now(), trails: list,
+      }));
+      trailsHeld.delete(area.key);
+      console.log(`Trails for ${area.key}: ${list.length} in ${Date.now() - started}ms`);
+    } catch (e) {
+      if (e.fatal) console.error(`Trails for ${area.key}: the query was REFUSED, fix it:`, e.message);
+      else console.error(`Trails for ${area.key} unavailable:`, e.message);
+      trailsHeld.set(area.key, {
+        until: Date.now() + (e.rateLimited ? TRAILS_RATE_RETRY_MS : TRAILS_RETRY_MS),
+        error: e.rateLimited ? 'OpenStreetMap\'s trail server is busy. Try again in half an hour.'
+                             : 'Couldn\'t reach OpenStreetMap\'s trail server.',
+      });
+    }
+  }).finally(() => trailsPending.delete(area.key));
+  trailsPending.set(area.key, job);
+  trailsChain = job;
+}
+
+// Answers at once and never waits on Overpass, which can take a minute: a
+// request held that long would end in the browser's own timeout, and the app
+// would show itself offline. With a cached file, that file (a stale one is
+// refreshed behind it). Without one, 202 {status:'fetching'} and the panel
+// asks again in a few seconds; 502 once a fetch has failed, until the area's
+// retry time is up.
+app.get('/api/trails', (req, res) => {
+  try {
+    if (!TRAILS_URLS.length) return res.status(503).json({ error: 'Trail lookups are turned off on this server (WT_TRAILS_API=off).' });
+    const lat = Number(req.query.lat), lon = Number(req.query.lon);
+    const area = req.query.lat != null && req.query.lon != null ? trails.areaFor(lat, lon) : null;
+    if (!area) return res.status(400).json({ error: 'lat and lon are required' });
+    const cached = readTrailsCache(area.key);
+    const age = cached ? Date.now() - cached.fetched_at : Infinity;
+    if (age > (req.query.refresh === '1' ? TRAILS_REFRESH_MIN_MS : TRAILS_FRESH_MS)) startTrailsFetch(area);
+    if (cached) return sendCompressible(req, res, `trails:${area.key}`, cached.text, 'json');
+    if (trailsPending.has(area.key)) return res.status(202).json({ status: 'fetching' });
+    const held = trailsHeld.get(area.key);
+    return res.status(502).json({ error: held ? held.error : 'Trails unavailable.' });
+  } catch (e) {
+    console.error('GET /api/trails', e);
     res.status(500).json({ error: e.message });
   }
 });
