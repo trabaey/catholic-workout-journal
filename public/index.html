@@ -11329,12 +11329,12 @@ const App = (() => {
           <textarea class="notes-area" id="hedit-note" style="min-height:60px;margin-top:0;">${escapeHTML(item.note||'')}</textarea>
         </div>
         ${isSnowSportType(type) ? `<div style="margin-bottom:12px;">${snowPickerHTML('hedit', item)}</div>` : ''}
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        ${type === REST_TYPE.value ? '' : `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
           <span style="font-size:var(--fs-body);color:var(--t3);font-weight:700;white-space:nowrap;">RPE</span>
           <input type="range" min="1" max="10" value="${item.rpe||5}" class="rpe-slider" id="hedit-rpe"
-            oninput="document.getElementById('hedit-rpe-val').textContent=this.value">
-          <span style="font-size:var(--fs-emph);font-weight:700;min-width:20px;" id="hedit-rpe-val">${item.rpe||5}</span>
-        </div>
+            oninput="this.dataset.touched='1';document.getElementById('hedit-rpe-val').textContent=this.value">
+          <span style="font-size:var(--fs-emph);font-weight:700;min-width:20px;" id="hedit-rpe-val">${item.rpe ?? '–'}</span>
+        </div>`}
         <button class="save-btn add-btn" onclick="App.saveHistoryEdit(${item.id})" style="margin-top:0;">Save changes</button>
       </div>`;
   }
@@ -11398,7 +11398,13 @@ const App = (() => {
 
     const dateInput = document.getElementById('hedit-date')?.value;
     const note      = document.getElementById('hedit-note')?.value  || '';
-    const rpe       = parseInt(document.getElementById('hedit-rpe')?.value || '5', 10);
+    // An entry with no RPE (a synced run whose watch prompt was skipped)
+    // keeps none unless the slider is actually moved: its resting position of
+    // 5 is a placeholder, not an answer, and a made-up 5 would feed the RPE
+    // trends and the effort load. A rest day has no slider and no RPE.
+    const rpeEl     = document.getElementById('hedit-rpe');
+    const rpe       = rpeEl && (original.rpe != null || rpeEl.dataset.touched)
+      ? parseInt(rpeEl.value, 10) : (original.rpe ?? null);
 
     // Parse the date back to a locale string and a timestamp
     let date = original.date, timestamp = original.timestamp;
@@ -12582,6 +12588,11 @@ const App = (() => {
     const more = document.getElementById('journal-more');
     if (more && typeof IntersectionObserver !== 'undefined') {
       journalMoreObserver = new IntersectionObserver(obs => {
+        // Not while an inline editor is open: the full re-render rebuilds it
+        // from what is SAVED, so whatever was typed would vanish as the reader
+        // scrolls. The button still works, and the observer fires again the
+        // next time it comes into range.
+        if (journalEditorOpen()) return;
         if (obs.some(o => o.isIntersecting)) { journalMoreObserver.disconnect(); showMoreJournal(); }
       }, { rootMargin: '400px 0px' });
       journalMoreObserver.observe(more);
@@ -12739,7 +12750,16 @@ const App = (() => {
       if (!document.querySelector('#journal-content .exercise-card')) renderJournalView();
       return;
     }
-    if (node && dayMatchesJournalFilters(day)) { node.outerHTML = renderJournalDay(day); sizeJournalFields(document.getElementById('journal-content')); return; }
+    if (node && dayMatchesJournalFilters(day)) {
+      node.outerHTML = renderJournalDay(day);
+      // The rest of what renderJournalView does after building cards: the
+      // cover photos and an open Details fold's route summary are filled in
+      // after the markup, so a patched card needs them mounted too.
+      const fresh = document.getElementById(`journal-day-${date}`);
+      if (fresh) { mountOutingSummaries(fresh); mountPhotoImages(fresh); }
+      sizeJournalFields(document.getElementById('journal-content'));
+      return;
+    }
     renderJournalView();
   }
 
