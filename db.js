@@ -1467,24 +1467,27 @@ addColumnIfMissing('activity_routes', 'hr', 'hr TEXT');
 // after the addColumnIfMissing calls, since it rescales workout_pain. RPE is
 // a separate currency and is never touched. Story: DECISIONS.md#rating-scale-1-10.
 const RATING_SCALE_MIGRATION_VERSION = 1;
+// [table, column, oldMin] — oldMin is 1 for every field except the two
+// evening 0-5 scales. Formula: oldMin===1 -> round((v-1)/4*9)+1;
+// oldMin===0 -> round(v/5*9)+1. Direction (higher=worse for pain/severity)
+// is preserved automatically since it's a monotonic rescale either way.
+// Exported for POST /api/import, which applies the same rescale to a JSON
+// backup taken before it (see legacyRatingScale in server.js).
+const RATING_SCALE_COLUMNS = [
+  ['checkins', 'morning_sleep', 1], ['checkins', 'morning_feeling', 1],
+  ['checkins', 'evening_eating', 1],
+  ['checkins', 'evening_energy', 0], ['checkins', 'evening_feeling', 0],
+  ['injury_checkins', 'morning_pain', 1], ['injury_checkins', 'evening_pain', 1],
+  ['injury_checkins', 'workout_pain', 1],
+  ['injuries', 'severity', 1],
+];
+const rescaleRatingTo10 = (v, oldMin) => oldMin === 0
+  ? Math.round(v / 5 * 9) + 1
+  : Math.round((v - 1) / 4 * 9) + 1;
+
 function migrateRatingScalesTo10() {
   if (db.pragma('user_version', { simple: true }) >= RATING_SCALE_MIGRATION_VERSION) return;
-
-  // [table, column, oldMin] — oldMin is 1 for every field except the two
-  // evening 0-5 scales. Formula: oldMin===1 -> round((v-1)/4*9)+1;
-  // oldMin===0 -> round(v/5*9)+1. Direction (higher=worse for pain/severity)
-  // is preserved automatically since it's a monotonic rescale either way.
-  const COLUMNS = [
-    ['checkins', 'morning_sleep', 1], ['checkins', 'morning_feeling', 1],
-    ['checkins', 'evening_eating', 1],
-    ['checkins', 'evening_energy', 0], ['checkins', 'evening_feeling', 0],
-    ['injury_checkins', 'morning_pain', 1], ['injury_checkins', 'evening_pain', 1],
-    ['injury_checkins', 'workout_pain', 1],
-    ['injuries', 'severity', 1],
-  ];
-  const rescale = (v, oldMin) => oldMin === 0
-    ? Math.round(v / 5 * 9) + 1
-    : Math.round((v - 1) / 4 * 9) + 1;
+  const COLUMNS = RATING_SCALE_COLUMNS, rescale = rescaleRatingTo10;
 
   let totalChanged = 0;
   db.transaction(() => {
@@ -4036,4 +4039,4 @@ function closeDatabase() {
   db.close();
 }
 
-module.exports = { transaction, closeDatabase, durationSec, NAME_KEYED_EXERCISE_TABLES, isoDateStr, normalizeDateStr, getDataYearSpan, getUsers, userExists, createUser, updateUser, restoreUser, getLifts, setLifts, getExerciseDefaults, setExerciseDefaults, seedExerciseDefaultsFromRoutines, getAllExerciseNames, getSchedule, setScheduleDay, getPlans, setPlanDay, getHistory, addHistory, updateHistory, refreshDeviceFields, addDeviceFieldsToManual, deleteHistory, clearHistory, historyBelongsToUser, getBodyWeight, addBodyWeight, deleteBodyWeight, hasExternalId, getCheckins, getCheckin, upsertCheckin, deleteCheckin, GARMIN_DAILY_COLUMNS, getGarminDaily, getGarminDailyDay, upsertGarminDaily, restoreGarminDaily, NON_ROUTE_TYPES, getActivityRoutes, getActivityRouteWithProfile, getRoutelessActivityIds, markRoutesMissing, getActivityRoute, upsertActivityRoute, restoreActivityRoute, ACTIVITY_WEATHER_COLUMNS, getActivityWeather, getWeatherlessActivities, upsertActivityWeather, settleActivityWeather, getRouteSegments, getRouteSegment, routeSegmentNameTaken, createRouteSegment, updateRouteSegment, deleteRouteSegment, restoreRouteSegment, getRoutines, createRoutine, updateRoutine, archiveRoutine, getExerciseCategoryOverrides, setExerciseCategoryOverride, getExerciseFormNotes, setExerciseFormNote, getExerciseWeightless, setExerciseWeightless, getExerciseMuscles, setExerciseMuscles, getExercisePatterns, setExercisePattern, getExerciseTimed, setExerciseTimed, getExerciseUnranked, setExerciseUnranked, mergeExerciseNames, getActivityTypes, ensureActivityType, createActivityType, updateActivityType, restoreActivityType, findManualCandidates, findSyncedActivityNear, getGarminHistory, findLikelyDuplicate, backupDatabase, getGarminSyncStatus, setGarminSyncStatus, clearGarminSyncStatus, getAppleSyncStatus, setAppleSyncStatus, clearAppleSyncStatus, getBackupStatus, setBackupStatus, getGoals, getGoal, createGoal, updateGoal, deleteGoal, restoreGoal, clearGoals, getInjuries, createInjury, updateInjury, deleteInjury, restoreInjury, clearInjuries, relinkInjuries, unlinkInjuriesFromHistory, getInjuryCheckins, getInjuryCheckin, upsertInjuryCheckin, restoreInjuryCheckin, getPregnancyInfo, setPregnancyInfo, restorePregnancyInfo, getPregnancyMilestones, createPregnancyMilestone, updatePregnancyMilestone, deletePregnancyMilestone, restorePregnancyMilestone, clearPregnancyMilestones, getLifePhases, getLifePhase, createLifePhase, updateLifePhase, deleteLifePhase, restoreLifePhase, CUSTOM_FLAG_PREFIX, getCheckinFlagPrefs, getCheckinFlagPref, getCustomCheckinFlags, createCustomCheckinFlag, updateCustomCheckinFlag, moveCustomCheckinFlag, setBuiltinCheckinFlagHidden, deleteCheckinFlagPref, checkinFlagUseCount, restoreCheckinFlagPref };
+module.exports = { RATING_SCALE_COLUMNS, rescaleRatingTo10, transaction, closeDatabase, durationSec, NAME_KEYED_EXERCISE_TABLES, isoDateStr, normalizeDateStr, getDataYearSpan, getUsers, userExists, createUser, updateUser, restoreUser, getLifts, setLifts, getExerciseDefaults, setExerciseDefaults, seedExerciseDefaultsFromRoutines, getAllExerciseNames, getSchedule, setScheduleDay, getPlans, setPlanDay, getHistory, addHistory, updateHistory, refreshDeviceFields, addDeviceFieldsToManual, deleteHistory, clearHistory, historyBelongsToUser, getBodyWeight, addBodyWeight, deleteBodyWeight, hasExternalId, getCheckins, getCheckin, upsertCheckin, deleteCheckin, GARMIN_DAILY_COLUMNS, getGarminDaily, getGarminDailyDay, upsertGarminDaily, restoreGarminDaily, NON_ROUTE_TYPES, getActivityRoutes, getActivityRouteWithProfile, getRoutelessActivityIds, markRoutesMissing, getActivityRoute, upsertActivityRoute, restoreActivityRoute, ACTIVITY_WEATHER_COLUMNS, getActivityWeather, getWeatherlessActivities, upsertActivityWeather, settleActivityWeather, getRouteSegments, getRouteSegment, routeSegmentNameTaken, createRouteSegment, updateRouteSegment, deleteRouteSegment, restoreRouteSegment, getRoutines, createRoutine, updateRoutine, archiveRoutine, getExerciseCategoryOverrides, setExerciseCategoryOverride, getExerciseFormNotes, setExerciseFormNote, getExerciseWeightless, setExerciseWeightless, getExerciseMuscles, setExerciseMuscles, getExercisePatterns, setExercisePattern, getExerciseTimed, setExerciseTimed, getExerciseUnranked, setExerciseUnranked, mergeExerciseNames, getActivityTypes, ensureActivityType, createActivityType, updateActivityType, restoreActivityType, findManualCandidates, findSyncedActivityNear, getGarminHistory, findLikelyDuplicate, backupDatabase, getGarminSyncStatus, setGarminSyncStatus, clearGarminSyncStatus, getAppleSyncStatus, setAppleSyncStatus, clearAppleSyncStatus, getBackupStatus, setBackupStatus, getGoals, getGoal, createGoal, updateGoal, deleteGoal, restoreGoal, clearGoals, getInjuries, createInjury, updateInjury, deleteInjury, restoreInjury, clearInjuries, relinkInjuries, unlinkInjuriesFromHistory, getInjuryCheckins, getInjuryCheckin, upsertInjuryCheckin, restoreInjuryCheckin, getPregnancyInfo, setPregnancyInfo, restorePregnancyInfo, getPregnancyMilestones, createPregnancyMilestone, updatePregnancyMilestone, deletePregnancyMilestone, restorePregnancyMilestone, clearPregnancyMilestones, getLifePhases, getLifePhase, createLifePhase, updateLifePhase, deleteLifePhase, restoreLifePhase, CUSTOM_FLAG_PREFIX, getCheckinFlagPrefs, getCheckinFlagPref, getCustomCheckinFlags, createCustomCheckinFlag, updateCustomCheckinFlag, moveCustomCheckinFlag, setBuiltinCheckinFlagHidden, deleteCheckinFlagPref, checkinFlagUseCount, restoreCheckinFlagPref };

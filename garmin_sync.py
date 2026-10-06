@@ -15,7 +15,7 @@ Dependencies are pinned in requirements.txt. Credentials are per-user files
 under data/; load_credentials() has the precedence chain.
 """
 
-import os, sys, argparse, re, math, time, subprocess, fcntl, requests
+import os, sys, argparse, re, math, time, subprocess, fcntl, base64, requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from time import monotonic
@@ -206,7 +206,9 @@ def load_credentials(user_id=1):
     .env -> workout-tracker.env, the paths that account used before per-user
     credentials. data/ comes first because OMV only mounts it; the last two
     are rewritten by OMV on rebuild. setdefault, so a real environment
-    variable beats the file.
+    variable beats the file. The first file that EXISTS is used, credentials or
+    not: Disconnect leaves user 1 an empty data/garmin-1.env precisely so the
+    legacy files are not reached (server.js deleteGarminCredentialsFile).
 
     This is the ONE copy of the precedence; scripts/backfill_garmin_timestamps.py
     reuses it. Only ever CALL it from __main__, never at import time: the test
@@ -232,6 +234,11 @@ def load_credentials(user_id=1):
                     k, v = line.split('=', 1)
                     k = k.strip()
                     v = v.strip().strip('"').strip("'")
+                    # The app writes the password in base64 (server.js
+                    # writeGarminCredentials), so the stripping above can't
+                    # change one that starts or ends with a space or a quote.
+                    if k == 'GARMIN_PASSWORD_B64':
+                        k, v = 'GARMIN_PASSWORD', base64.b64decode(v).decode('utf-8')
                     os.environ.setdefault(k, v)
     else:
         print(f"WARNING: no credentials file found for user {user_id} (checked "
@@ -262,6 +269,9 @@ def make_mfa_getter(cli_code):
 # ── Config ─────────────────────────────────────────────────────────────────────
 # GARMIN_EMAIL/GARMIN_PASSWORD are read inside main(), after load_credentials().
 WORKOUT_API    = os.environ.get('WORKOUT_API', 'http://localhost:3000')
+# The activities POST: generous, since the server answers only once the whole
+# batch is committed.
+SYNC_POST_TIMEOUT_S = 120
 ACTIVITY_LIMIT = int(os.environ.get('GARMIN_LIMIT', '30'))
 # Page size when --limit asks for more than one page. Garmin documents no upper
 # bound for get_activities' count, so one huge request risks a silent
@@ -1801,8 +1811,17 @@ def main(mfa_code=None, user_id=1, sleep_days=SLEEP_LOOKBACK_DAYS,
             f"{WORKOUT_API}/api/garmin/sync",
             json=payload,
             headers={'Content-Type': 'application/json'},
-            timeout=10,
+            # The server commits the whole batch before it answers, and a deep
+            # --limit backfill can take well over 10 s to do that.
+            timeout=SYNC_POST_TIMEOUT_S,
         )
+    except requests.exceptions.ReadTimeout:
+        # Not "unrecognised": the import most likely finished, and only the
+        # answer was late. The next run sees those activities as already
+        # logged and goes on to their routes.
+        print(f"ERROR: The app took over {SYNC_POST_TIMEOUT_S} s to answer. The import has probably finished; run the sync again to fetch routes.")
+        _set_status(False, 'The app was slow to confirm the import. It has probably finished; sync again to fetch routes.')
+        sys.exit(1)
     except requests.exceptions.ConnectionError:
         print(f"ERROR: Could not connect to {WORKOUT_API}. Is the container running?")
         # Can't report this one anywhere — the server we'd report to is the
