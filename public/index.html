@@ -30432,7 +30432,8 @@ const App = (() => {
   // alone made a short trail "partly explored". `minRunM`: a covered stretch
   // shorter than this is dropped too, for a street you ran down for half a
   // block beside a path. It counts the nearM an outing reaches past each of
-  // its own ends, so 120 m is about 60 m actually on the trail. `maxGapM`:
+  // its own ends, so 120 m is about 60 m actually on the trail; a stretch is
+  // measured on through the trail's forks (coverRuns). `maxGapM`:
   // the other way round, an UNcovered stretch up to this long with cover
   // beside it counts as covered, for a track that cuts a bend or turns at a
   // junction and misses a sample or three of a trail it plainly followed --
@@ -30500,18 +30501,62 @@ const App = (() => {
     };
   }
 
+  // A trail's RUNS of samples where test(i) holds, as { samples, lengthM }.
+  // A run is consecutive samples on one piece, and a run that reaches a
+  // piece's end carries on into every run on another piece reaching the same
+  // point. trails.js stitch() joins a trail's ways wherever just two meet, so
+  // the pieces that are left meet at its forks, and a walk through a fork is
+  // one walk: measured piece by piece, a 30 m piece between two forks that
+  // you walked straight through was "too short" and drew as a lone dot.
+  // Ends match exactly: stitch() works on shared OSM nodes, rounded alike.
+  function coverRuns(cov, test) {
+    const runs = [];
+    for (let i = 0; i < cov.n;) {
+      if (!test(i)) { i++; continue; }
+      let j = i;
+      while (j + 1 < cov.n && test(j + 1) && cov.pi[j + 1] === cov.pi[i]) j++;
+      runs.push([i, j]);
+      i = j + 1;
+    }
+    const parent = runs.map((_, k) => k);
+    const find = k => { while (parent[k] !== k) k = parent[k] = parent[parent[k]]; return k; };
+    const at = new Map();   // an end's key -> a run that reaches it
+    runs.forEach(([i, j], k) => {
+      const p = cov.pi[i], keys = [];
+      if (i === cov.first[p]) keys.push(cov.ends[p][0]);
+      if (j === cov.last[p]) keys.push(cov.ends[p][1]);
+      for (const key of keys) {
+        if (at.has(key)) parent[find(k)] = find(at.get(key));
+        else at.set(key, k);
+      }
+    });
+    const groups = new Map();
+    runs.forEach(([i, j], k) => {
+      const root = find(k);
+      let g = groups.get(root);
+      if (!g) groups.set(root, g = { samples: [], lengthM: 0 });
+      for (let s = i; s <= j; s++) g.samples.push(s);
+      g.lengthM += cov.b[j] - cov.a[i];
+    });
+    return [...groups.values()];
+  }
+
   // ONE TRAIL'S COVERAGE, per sample, before any radius is applied: sample i
   // lies on piece pi[i] from a[i] to b[i] metres along it, homeM[i] from home,
   // and was last covered by outing route[i] (an index into index.ids/dates,
-  // newest first), or -1. `home` is [lat, lon]. Runs of cover shorter than
-  // minRunM are cleared here, and then gaps up to maxGapM between what is
-  // left are filled, so questSummary only ever adds up. Pure,
-  // self-contained apart from EARTH_R_M, and exported for testing.
+  // newest first), or -1. Piece p's samples are first[p]..last[p] (-1 for a
+  // piece too short to sample) and its ends' keys are ends[p], for
+  // coverRuns. `home` is [lat, lon]. Runs of cover shorter than minRunM are
+  // cleared here, and then gaps up to maxGapM between what is left are
+  // filled, so questSummary only ever adds up. Pure, self-contained apart
+  // from EARTH_R_M and coverRuns, and exported for testing.
   function trailCoverage(trail, index, home, { stepM, nearM, minCos, minRunM, maxGapM } = QUEST_MATCH) {
     const { ky, kx, cellM, buckets } = index;
     const hy = (home[0] - index.lat) * ky, hx = (home[1] - index.lon) * kx;
-    const pi = [], a = [], b = [], homeM = [], route = [];
+    const pi = [], a = [], b = [], homeM = [], route = [], first = [], last = [];
+    const ends = trail.pieces.map(pts => [pts[0], pts[pts.length - 1]].map(q => `${q[0]},${q[1]}`));
     trail.pieces.forEach((pts, p) => {
+      first[p] = route.length;
       const P = pts.map(q => [(q[0] - index.lat) * ky, (q[1] - index.lon) * kx]);
       let along = 0;
       for (let k = 0; k < P.length - 1; k++) {
@@ -30541,14 +30586,13 @@ const App = (() => {
         }
         along += len;
       }
+      last[p] = route.length - 1;
+      if (last[p] < first[p]) first[p] = last[p] = -1;
     });
-    // Clear covered runs shorter than minRunM, within one piece.
-    for (let i = 0; i < route.length;) {
-      if (route[i] < 0) { i++; continue; }
-      let j = i;
-      while (j + 1 < route.length && route[j + 1] >= 0 && pi[j + 1] === pi[i]) j++;
-      if (b[j] - a[i] < minRunM) for (let k = i; k <= j; k++) route[k] = -1;
-      i = j + 1;
+    const cov = { id: trail.id, n: route.length, pi, a, b, homeM, route, first, last, ends };
+    // Clear covered runs shorter than minRunM, through the trail's forks.
+    for (const g of coverRuns(cov, i => route[i] >= 0)) {
+      if (g.lengthM < minRunM) for (const k of g.samples) route[k] = -1;
     }
     // Then fill gaps up to maxGapM, within one piece, that have cover on
     // both sides, or on one side and the piece's end on the other (a
@@ -30568,7 +30612,7 @@ const App = (() => {
       }
       i = j + 1;
     }
-    return { id: trail.id, n: route.length, pi, a, b, homeM, route };
+    return cov;
   }
 
   // A trail's numbers INSIDE THE RING of `radiusM` around home, so the
@@ -30597,15 +30641,12 @@ const App = (() => {
     }
     if (!totalM) return null;
     // A fresh run shorter than minRunM is not "explored" either: the old
-    // visit around it may cover more than the new one does.
+    // visit around it may cover more than the new one does. Through the
+    // trail's forks, as in trailCoverage.
     const isDone = new Array(cov.n).fill(false);
-    for (let i = 0; i < cov.n;) {
-      if (!fresh(i)) { i++; continue; }
-      let j = i;
-      while (j + 1 < cov.n && fresh(j + 1) && cov.pi[j + 1] === cov.pi[i]) j++;
-      if (cov.b[j] - cov.a[i] >= minRunM) for (let k = i; k <= j; k++) isDone[k] = true;
-      else for (let k = i; k <= j; k++) if (cov.homeM[k] <= radiusM) freshM -= cov.b[k] - cov.a[k];
-      i = j + 1;
+    for (const g of coverRuns(cov, fresh)) {
+      if (g.lengthM >= minRunM) for (const k of g.samples) isDone[k] = true;
+      else for (const k of g.samples) if (cov.homeM[k] <= radiusM) freshM -= cov.b[k] - cov.a[k];
     }
     const runsWhere = want => {
       const out = [];
