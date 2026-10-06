@@ -30463,7 +30463,15 @@ const App = (() => {
   // for the new size, and by a ResizeObserver for everything else, which then
   // finds nothing to do. A window resize is Leaflet's own (it keeps the
   // centre) and lands first, so this finds nothing to do then either.
+  //
+  // The panel's classes are brought up to date FIRST. They decide the map's
+  // size (the desktop grid's second column, the list hidden behind an opened
+  // route), and their MutationObserver only runs after the current task, so
+  // without this the size here is the OLD one: a mode switch's re-centre
+  // landed before the column came or went, the ResizeObserver then resized
+  // keeping the top-left, and Heatmap <-> Routes walked the map sideways.
   function syncMapSize() {
+    syncMapPanelClasses();
     const el = document.getElementById('route-map');
     if (!mapInstance || !el || !el.clientHeight) return;
     const size = mapInstance.getSize();
