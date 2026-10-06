@@ -13635,7 +13635,12 @@ const App = (() => {
         const done = (item.exercises || [])
           .filter(e => e.name === g.exercise_name)
           .flatMap(e => (e.sets || []))
-          .filter(s => isWorkingSet(s) && parseFloat(s.weight) > 0);
+          // Sets above MAX_E1RM_REPS are dropped, as by every other e1RM
+          // reader (e1rmTrend, the trend card, the period review): Epley
+          // diverges up there, and a 20-rep day would otherwise mark this goal
+          // achieved for good (achieved_at is write-once) from a number the
+          // rest of the app refuses to compute.
+          .filter(s => isWorkingSet(s) && parseFloat(s.weight) > 0 && (parseFloat(s.reps) || 1) <= MAX_E1RM_REPS);
         if (!done.length) continue;
         const best = Math.max(...done.map(s => epley1RM(parseFloat(s.weight), parseFloat(s.reps) || 1)));
         raw.push({ date: item.date, value: Math.round(best * 10) / 10 });
@@ -16988,6 +16993,9 @@ const App = (() => {
   // If you can't write the line, the card isn't ready.
   // Story: DECISIONS.md#analytics-question-audit.
   function buildAnalyticsParts() {
+    // A rebuild means some input changed, so the effort cards' shared
+    // per-render memo starts empty (see buildDailyLoads).
+    dailyLoadsMemo = null;
     return {
       // 'lifting' is first on purpose: stall detection is the one screen here
       // that says what to CHANGE rather than describing what happened.
@@ -18058,12 +18066,16 @@ const App = (() => {
   // no load and must never be read as a zero. Durations are estimated from
   // ALL history, never from the window being drawn.
   //
-  // Memoised on the historyCache array, which every write replaces wholesale:
-  // both effort cards read it on every Analytics render.
+  // Memoised for ONE build of the Analytics tab: both effort cards read it,
+  // and buildAnalyticsParts() empties it before each build. Not keyed on the
+  // historyCache array, as it once was: several writes change that array in
+  // place (a saved session's unshift, an edited row), so the identity check
+  // served loads from before the change. When nothing has changed, the
+  // analytics memo (analyticsMemoToken) skips the build, and this, entirely.
   let dailyLoadsMemo = null;
 
   function buildDailyLoads() {
-    if (dailyLoadsMemo && dailyLoadsMemo.history === historyCache) return dailyLoadsMemo.byDate;
+    if (dailyLoadsMemo) return dailyLoadsMemo.byDate;
     const typical = typicalDurations(historyCache);
     const byDate = {};
     for (const item of historyCache) {
@@ -18075,7 +18087,7 @@ const App = (() => {
       day.sessions.push({ ...est, item });
     }
     for (const d of Object.values(byDate)) d.sessions.sort((a, b) => (a.item.timestamp || 0) - (b.item.timestamp || 0));
-    dailyLoadsMemo = { history: historyCache, byDate };
+    dailyLoadsMemo = { byDate };
     return byDate;
   }
 
@@ -18184,7 +18196,11 @@ const App = (() => {
         ` · your usual week ${fmtLoad(usual)} · <b style="color:var(--t1);">${d > 0 ? '+' : d < 0 ? '−' : '±'}${fmtLoad(Math.abs(d))}</b>`}
       </div>`;
 
-    const grouped = bucketByCalendar(inWindow.map(s => ({ ...s, date: s.item.date })), span);
+    // The bars are DAYS, so only the day count decides. bucketByCalendar also
+    // counts its items, and these are sessions: two rated sessions a day put a
+    // 30-day window over MAX_BARS and turned it weekly.
+    const grouped = span.days <= MAX_BARS ? null
+      : bucketByCalendar(inWindow.map(s => ({ ...s, date: s.item.date })), span);
     const W = 300, H = 90, AXIS_W = 24, TOP_PAD = 8, TICK_H = 16, BAR_RATIO = 0.72;
     const tickAt = (x, label) =>
       `<text x="${x.toFixed(1)}" y="${H + 11}" text-anchor="middle" font-size="7" fill="#6b7280">${label}</text>`;
