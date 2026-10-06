@@ -1012,6 +1012,9 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
 .emoji-field label { font-size: var(--fs-micro); font-weight: 700; color: var(--t3); text-transform: uppercase; letter-spacing: 0.4px; }
 .emoji-trigger { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1.5px solid var(--line); border-radius: var(--r-md); background: var(--page); cursor: pointer; font-size: var(--fs-emph); font-weight: 600; color: var(--t1); }
 .emoji-trigger:hover { border-color: var(--line-strong); }
+/* A div acting as a button (role, tabindex, Enter/Space), so a keyboard can
+   reach the icon pickers; this shows where focus is. */
+.emoji-trigger:focus-visible { outline: none; border-color: var(--brand); }
 .emoji-trigger .preview { font-size: 20px; }
 .emoji-grid-wrap { display: none; border: 1.5px solid var(--line); border-radius: var(--r-md); padding: 8px; background: var(--surface); margin-top: 4px; }
 .emoji-grid-wrap.open { display: block; }
@@ -1746,7 +1749,7 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
           <p class="wizard-hint ex-no-routine-only">Not in any active routine. These defaults stay with the exercise and apply when you add it to one.</p>
           <div class="emoji-field ex-row-field">
             <label>Icon (optional)</label>
-            <div class="emoji-trigger" onclick="App.toggleEmojiPicker('new')">
+            <div class="emoji-trigger" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" onclick="App.toggleEmojiPicker('new')">
               <span class="preview" id="new-ex-emoji-preview">💪</span>
               <span>Choose emoji</span>
             </div>
@@ -1754,7 +1757,7 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
             <input type="hidden" id="new-ex-emoji" value="💪">
           </div>
           <div class="emoji-field">
-            <label>Category (for balance analytics)</label>
+            <label for="new-ex-category">Category (for balance analytics)</label>
             <!-- Options are filled from CATEGORIES by populateAddExerciseCategoryOptions()
                  at init, so this form can't be the one place a new category is missing. -->
             <select id="new-ex-category" class="set-input" style="margin-bottom:0;">
@@ -1852,9 +1855,9 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
         <div id="add-ex-step-4" style="display:none;">
           <div class="wizard-step-label"><span class="wizard-add-only">Step 4 · </span>Reference</div>
           <input id="new-ex-video" class="set-input ex-row-field" placeholder="YouTube URL (optional)">
-          <label style="display:block;font-size:var(--fs-caption);font-weight:700;color:var(--t2);margin:10px 0 4px;">How to</label>
+          <label style="display:block;font-size:var(--fs-caption);font-weight:700;color:var(--t2);margin:10px 0 4px;" for="new-ex-how-to">How to</label>
           <textarea id="new-ex-how-to" class="checkin-journal" style="min-height:70px;" placeholder="Setup, movement cues, breathing..."></textarea>
-          <label style="display:block;font-size:var(--fs-caption);font-weight:700;color:var(--t2);margin:10px 0 4px;">Tips &amp; Mistakes</label>
+          <label style="display:block;font-size:var(--fs-caption);font-weight:700;color:var(--t2);margin:10px 0 4px;" for="new-ex-mistakes">Tips &amp; Mistakes</label>
           <textarea id="new-ex-mistakes" class="checkin-journal" style="min-height:70px;" placeholder="What to watch out for..."></textarea>
           <p class="wizard-hint" style="margin:8px 0 0;">Optional — shown as a "Form" button next to Video during a lift session.</p>
         </div>
@@ -1952,7 +1955,7 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
           <div class="log-header">
             <div class="log-date" id="log-date-label"></div>
             <div class="day-type-row">
-              <label>Workout</label>
+              <label for="today-type-select">Workout</label>
               <select class="day-type-select" id="today-type-select" onchange="App.changeLogType(this.value)"></select>
             </div>
             <div class="log-plan-chips" id="log-plan-chips"></div>
@@ -2139,7 +2142,7 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
             <div id="routines-list"></div>
             <hr style="margin:16px 0;border:0;border-top:1px solid var(--line);">
             <div style="display:flex;gap:8px;align-items:center;">
-              <div class="emoji-trigger" onclick="App.toggleRoutineEmojiPicker('new')" style="padding:8px;">
+              <div class="emoji-trigger" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" onclick="App.toggleRoutineEmojiPicker('new')" style="padding:8px;">
                 <span class="preview" id="routine-new-preview">🏋️</span>
               </div>
               <input id="new-routine-name" class="set-input" placeholder="New routine name" style="flex:1;margin-bottom:0;"
@@ -2208,7 +2211,8 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
         <div class="card-title">Backup &amp; restore</div>
         <div id="backup-status-lines" class="backup-status"></div>
         <p style="font-size:var(--fs-body);color:var(--t3);margin-bottom:8px;line-height:1.5;">
-          The JSON backup restores here in the app. The full database is a copy of everything, for disaster recovery.
+          The JSON backup restores here in the app. The full database is a copy of all your data, for disaster recovery.
+          Neither holds outing photos: copy the server's <code>data/photos/</code> folder to keep those.
         </p>
         <details class="method-note" style="margin:0 0 12px;"><summary>What each backup holds</summary><div>
           <!-- This list is the user-facing checklist of what the JSON backup carries.
@@ -2229,6 +2233,9 @@ body.rest-active .toast { bottom: calc(88px + env(safe-area-inset-bottom, 0px));
           <strong>Full database</strong>
           is a point-in-time copy of the whole database file. It is restored on the
           server, not from here.
+          <strong>Photos</strong> are files beside the database
+          (<code>data/photos/</code>), not rows in it, so neither backup carries
+          them. Copy that folder along with either one.
         </div></details>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <button class="save-btn" onclick="App.exportData()">⬇ Download backup (JSON)</button>
@@ -5431,7 +5438,7 @@ const App = (() => {
       // THIS exercise last time, so a per-exercise note resurfaces when it
       // matters.
       const lastNote = lastSess
-        ? `<div class="last-session">Last: ${displayDate(lastSess.date)} · ${formatSetsSummary(exInfo.name, lastSess.sets)}</div>`
+        ? `<div class="last-session">Last: ${displayDate(lastSess.date)} · ${escapeHTML(formatSetsSummary(exInfo.name, lastSess.sets))}</div>`
         : '';
       const lastExNote = lastSess && lastSess.note
         ? `<div class="last-session-note">🖊 "${escapeHTML(lastSess.note)}"</div>`
@@ -5629,7 +5636,7 @@ const App = (() => {
   function exerciseWingHTML(name, notes) {
     const sessions = recentLiftSessions(name, WING_TREND_SESSIONS);
     const rows = sessions.slice(0, WING_HISTORY_ROWS).map(s =>
-      `<div class="ex-wing-row"${dayClickAttrs(s.date)}><span class="ex-wing-date">${shortDate(s.date)}</span><span>${formatSetsSummary(name, s.sets)}</span></div>`).join('');
+      `<div class="ex-wing-row"${dayClickAttrs(s.date)}><span class="ex-wing-date">${shortDate(s.date)}</span><span>${escapeHTML(formatSetsSummary(name, s.sets))}</span></div>`).join('');
     const howTo = (exerciseFormNotes[name.trim().toLowerCase()]?.how_to || '').replace(/\s+/g, ' ').trim();
     const cue = howTo.length > 150 ? howTo.slice(0, howTo.lastIndexOf(' ', 150)) + '…' : howTo;
     const note = notes?.[0];
@@ -6634,7 +6641,7 @@ const App = (() => {
          ${routes.map((r,i) => `
           <div class="route-row">
             ${climbGradeSelectHTML(r.grade || '', `onchange="App.updateRoute('${key}',${i},'grade',this.value)"`)}
-            <input class="set-input" type="number" min="1" placeholder="–" value="${r.attempts||''}" oninput="App.updateRoute('${key}',${i},'attempts',this.value)">
+            <input class="set-input" type="number" min="1" placeholder="–" value="${escapeHTML(String(r.attempts||''))}" oninput="App.updateRoute('${key}',${i},'attempts',this.value)">
             <!-- ?? not ||: 0 sends is a real answer ("tried, didn't send"), and a blank box saves back as ''. -->
             <input class="set-input" type="number" min="0" placeholder="–" value="${escapeHTML(String(r.sends ?? ''))}" oninput="App.updateRoute('${key}',${i},'sends',this.value)">
             <button class="remove-route" onclick="App.removeRoute('${key}',${i})">✕</button>
@@ -6827,7 +6834,7 @@ const App = (() => {
     container.innerHTML = active.map((r, i) => `
       <div style="margin-bottom:8px;">
         <div class="settings-row">
-          <div class="emoji-trigger" onclick="App.toggleRoutineEmojiPicker('${r.id}')" style="padding:6px;">
+          <div class="emoji-trigger" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" onclick="App.toggleRoutineEmojiPicker('${r.id}')" style="padding:6px;">
             <span class="preview" id="routine-${r.id}-preview">${escapeHTML(r.emoji)}</span>
           </div>
           <input type="hidden" id="routine-${r.id}-emoji" value="${escapeHTML(r.emoji)}">
@@ -7812,7 +7819,7 @@ const App = (() => {
   function activityTypeRowHTML(scope, key, t, buttonLabel, onclick) {
     return `<div style="margin-bottom:8px;">
       <div class="settings-row">
-        <div class="emoji-trigger" onclick="App.toggleActivityTypeEmojiPicker('${jsArg(scope)}','${jsArg(key)}')" style="padding:6px;">
+        <div class="emoji-trigger" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" onclick="App.toggleActivityTypeEmojiPicker('${jsArg(scope)}','${jsArg(key)}')" style="padding:6px;">
           <span class="preview" id="atype-${scope}-${key}-preview">${escapeHTML(t.emoji)}</span>
         </div>
         <input type="hidden" id="atype-${scope}-${key}-emoji" value="${escapeHTML(t.emoji)}">
@@ -7865,7 +7872,7 @@ const App = (() => {
         : '<p style="font-size:var(--fs-body);color:var(--t4);margin-bottom:10px;">None yet — a Garmin sync adds one automatically the first time it sees a new sport.</p>'}
       <hr style="margin:14px 0;border:0;border-top:1px solid var(--line);">
       <div class="settings-row">
-        <div class="emoji-trigger" onclick="App.toggleActivityTypeEmojiPicker('add','new')" style="padding:6px;">
+        <div class="emoji-trigger" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" onclick="App.toggleActivityTypeEmojiPicker('add','new')" style="padding:6px;">
           <span class="preview" id="atype-add-new-preview">${draftEmoji}</span>
         </div>
         <input type="hidden" id="atype-add-new-emoji" value="${escapeHTML(draftEmoji)}">
@@ -11245,7 +11252,9 @@ const App = (() => {
       ? `load ${Math.round(item.trainingLoad)}${item.trainingEffectLabel ? ` (${garminWordLabel(item.trainingEffectLabel)})` : ''}` : null;
     const parts = [item.distance?`${item.distance} km`:null, durationLabel(item.duration), item.pace||null,
                    item.avgHR?`${item.avgHR} bpm`:null, item.elevationGain?`↗ ${item.elevationGain} m`:null, load].filter(Boolean);
-    return parts.length ? `<div style="font-size:var(--fs-body);color:var(--t3);margin-top:5px;">${parts.join(' · ')}</div>` : '';
+    // Escaped: these are the stored strings themselves, and only their TYPE is
+    // checked on the way in, so a restored or hand-made row can hold markup.
+    return parts.length ? `<div style="font-size:var(--fs-body);color:var(--t3);margin-top:5px;">${parts.map(x => escapeHTML(String(x))).join(' · ')}</div>` : '';
   }
 
   function workoutStatsHTML(item) {
@@ -11257,7 +11266,7 @@ const App = (() => {
         item.exercises.map(ex => {
           const chips = ex.sets.map(s => {
             const lbl = setLabel(ex.name, s);
-            return `<span style="font-size:var(--fs-caption);background:${s.done?'rgba(16,185,129,0.15)':'#374151'};color:${s.done?'#34d399':'#9ca3af'};border-radius:var(--r-sm);padding:2px 8px;">${lbl}</span>`;
+            return `<span style="font-size:var(--fs-caption);background:${s.done?'rgba(16,185,129,0.15)':'#374151'};color:${s.done?'#34d399':'#9ca3af'};border-radius:var(--r-sm);padding:2px 8px;">${escapeHTML(lbl)}</span>`;
           }).join('');
           const exNote = ex.note ? `<div style="font-size:var(--fs-caption);color:var(--t3);font-style:italic;margin-top:4px;">🖊 ${escapeHTML(ex.note)}</div>` : '';
           return `<div style="margin-bottom:8px;"><span style="font-size:var(--fs-body);font-weight:600;color:var(--t1);display:block;margin-bottom:3px;">${escapeHTML(ex.name)}</span><div style="display:flex;flex-wrap:wrap;gap:4px;">${chips}</div>${exNote}</div>`;
@@ -11270,11 +11279,11 @@ const App = (() => {
     if (hasDistanceFields(type)) return sessionStatLineHTML(item);
     if (type === 'climb') {
       const dur = durationLabel(item.duration);
-      const durLine = dur ? `<div style="font-size:var(--fs-body);color:var(--t3);margin-top:5px;">${dur}</div>` : '';
+      const durLine = dur ? `<div style="font-size:var(--fs-body);color:var(--t3);margin-top:5px;">${escapeHTML(dur)}</div>` : '';
       if (!item.routes?.length) return durLine;
       return durLine + '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">' +
         item.routes.map(r => {
-          const meta = [r.attempts?`${r.attempts} att.`:null, r.sends?`${r.sends} send${r.sends!=1?'s':''}`:null].filter(Boolean).join(' · ');
+          const meta = escapeHTML([r.attempts?`${r.attempts} att.`:null, r.sends?`${r.sends} send${r.sends!=1?'s':''}`:null].filter(Boolean).join(' · '));
           return `<div style="margin-bottom:6px;"><span style="font-size:var(--fs-body);font-weight:600;color:var(--t1);">${escapeHTML(r.grade||'?')}</span>${meta?`<span style="font-size:var(--fs-body);color:var(--t3);margin-left:6px;">${meta}</span>`:''}</div>`;
         }).join('') + '</div>';
     }
@@ -11293,7 +11302,7 @@ const App = (() => {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
           <div>
             <label style="font-size:var(--fs-micro);font-weight:700;color:var(--t3);text-transform:uppercase;display:block;margin-bottom:4px;">Distance (km)</label>
-            <input class="set-input" id="hedit-distance" type="number" step="0.1" placeholder="0.0" value="${item.distance||''}">
+            <input class="set-input" id="hedit-distance" type="number" step="0.1" placeholder="0.0" value="${escapeHTML(String(item.distance||''))}">
           </div>
           <div>
             <label style="font-size:var(--fs-micro);font-weight:700;color:var(--t3);text-transform:uppercase;display:block;margin-bottom:4px;">Duration</label>
@@ -11307,7 +11316,7 @@ const App = (() => {
       const routeRows = routes.map((r, i) => `
         <div style="display:grid;grid-template-columns:1fr 64px 64px;gap:6px;margin-bottom:6px;">
           ${climbGradeSelectHTML(r.grade || '', `data-idx="${i}"`, 'hedit-route-grade')}
-          <input class="set-input hedit-route-att"   data-idx="${i}" type="number" placeholder="Att" value="${r.attempts||''}">
+          <input class="set-input hedit-route-att"   data-idx="${i}" type="number" placeholder="Att" value="${escapeHTML(String(r.attempts||''))}">
           <input class="set-input hedit-route-sends" data-idx="${i}" type="number" placeholder="↓" value="${escapeHTML(String(r.sends ?? ''))}">
         </div>`).join('');
       // Duration shares the distance types' id, so saveHistoryEdit's one
@@ -21176,9 +21185,16 @@ const App = (() => {
   // THAT day, not as of today, so a stretch last spring is judged against the
   // fitness it actually had — the rule computeSickDayRiskFactorPct states for
   // sick episodes, applied per day.
+  //
+  // The two baselines each scan the whole of garminDailyCache, so they are
+  // only computed for a day stressSignalsFor can judge: one with an evening
+  // check-in and a Garmin row. Without either it returns null regardless, and
+  // computing them anyway made the card quadratic in months of data.
   function stressDayVerdict(dateStr) {
-    const row = garminDailyCache.find(r => r && r.date === dateStr) || null;
     const checkin = checkinsCache.find(c => c && c.date === dateStr) || null;
+    if (!checkin || !checkin.evening_timestamp) return null;
+    const row = garminDailyCache.find(r => r && r.date === dateStr) || null;
+    if (!row) return null;
     return stressSignalsFor(row, checkin,
       recoveryBaseline('hrv_overnight', dateStr), recoveryBaseline('stress_avg', dateStr));
   }
@@ -21204,12 +21220,15 @@ const App = (() => {
   // Story: DECISIONS.md#stress-markers.
   function renderStressedDaysCard() {
     const TITLE = '😰 Stressed days', ASK = 'On which days did my body and I both say I was under stress?';
+    // Each day is asked about up to three times below; worked out once.
+    const verdicts = new Map();
+    const verdictOn = d => { if (!verdicts.has(d)) verdicts.set(d, stressDayVerdict(d)); return verdicts.get(d); };
     const span = chartWindowSpan('stressed-days', 92,
-      { since: checkinsCache.filter(c => c && c.date && stressDayVerdict(c.date)).map(c => c.date) });
+      { since: checkinsCache.filter(c => c && c.date && verdictOn(c.date)).map(c => c.date) });
 
     // Any comparable day at all, so an empty window can say whether a longer
     // range would fill it rather than just going quiet.
-    const everComparable = checkinsCache.some(c => c && c.date && stressDayVerdict(c.date));
+    const everComparable = checkinsCache.some(c => c && c.date && verdictOn(c.date));
     if (!everComparable) {
       return chartNeedsData(TITLE,
         'Needs a Garmin sync and evening check-ins on the same days — the card compares the two.',
@@ -21224,7 +21243,7 @@ const App = (() => {
     const cur = new Date(span.start);
     for (let i = 0; i < span.days; i++) {
       const dateStr = dateKey(cur);
-      days.push({ dateStr, verdict: stressDayVerdict(dateStr) });
+      days.push({ dateStr, verdict: verdictOn(dateStr) });
       cur.setDate(cur.getDate() + 1);
     }
 
@@ -26906,7 +26925,7 @@ const App = (() => {
       ? `<div class="litday-when">${[
           escapeHTML(when),
           day.cycle ? escapeHTML(String(day.cycle).replace(/^YEAR /, 'Year ')) : '',
-          day.psalter ? `Psalter week ${day.psalter}` : '',
+          day.psalter ? `Psalter week ${escapeHTML(String(day.psalter))}` : '',
         ].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>`
       : '';
 
