@@ -4509,10 +4509,12 @@ const App = (() => {
     // widget never gets: it describes this page's connection, not the day.
     document.getElementById('topbar-chips').innerHTML = topbarChipsHTML([offlineChip(), ...chips].filter(Boolean));
 
-    // Weekly count (Sun–Sat containing today)
-    const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - today.getDay());
-    const weekCount = historyCache.filter(h => h.timestamp && h.type !== 'rest' && new Date(h.timestamp) >= weekStart).length;
+    // Weekly count (Sun–Sat containing today), by the entry's stored DATE,
+    // as the Calendar and calcStreak count it. Not its timestamp: a synced
+    // late-evening outing's instant can fall in the next local week when this
+    // browser's timezone is ahead of the watch's.
+    const weekStart = weekStartKey(todayStr);
+    const weekCount = historyCache.filter(h => h.date && h.type !== 'rest' && h.date >= weekStart && h.date <= todayStr).length;
 
     // The check-in status is a to-do chip (checkinDueChip), shown only while
     // one is actually due.
@@ -6489,12 +6491,19 @@ const App = (() => {
     if (item) await commitActivityDetails(item, { reviewed: true }, 'Skipped');
   }
 
+  // Ids whose details are being saved. The PATCH is harmless twice, but the
+  // drafted injury is read before it, so a double tap on Save logged that
+  // injury twice. Same reason as workoutInjurySaving, per card here.
+  const activityDetailsSaving = new Set();
+
   // A partial PATCH — db.updateHistory merges it over the stored row, so
   // nothing the card doesn't show is touched. Removes just this card rather
   // than re-rendering the Log tab, whose other cards may hold typing.
   // `injuryDraft` rides along after it on Save only — Skip means "nothing to
   // add", including whatever was half-typed in the Anything hurt? fields.
   async function commitActivityDetails(item, patch, message, injuryDraft = null) {
+    if (activityDetailsSaving.has(item.id)) return;
+    activityDetailsSaving.add(item.id);
     try {
       await api.patch(`/api/history/${item.id}`, patch);
       const idx = historyCache.findIndex(h => h.id === item.id);
@@ -6509,6 +6518,8 @@ const App = (() => {
       workoutSavedToast(message, failed);
     } catch (e) {
       showToast(failMessage('save the workout details', e), true);
+    } finally {
+      activityDetailsSaving.delete(item.id);
     }
   }
 
@@ -7704,8 +7715,18 @@ const App = (() => {
     if (!(await confirmDialog({ title: `Merge "${alias}" into "${canonical}"?`, action: 'Merge', tone: 'warn',
       body: `This rewrites every past log entry, and any current routine's exercise, from "${alias}" to "${canonical}". It can't be undone automatically.` }))) return;
 
+    // Two failures, two different truths. The merge POST failing means nothing
+    // changed. A refetch failing after it means the merge DID happen, on
+    // every row, and only this page is behind: "try again" would then merge
+    // against a name that no longer exists.
+    let result;
     try {
-      const result = await api.post('/api/exercises/merge', { canonical, alias });
+      result = await api.post('/api/exercises/merge', { canonical, alias });
+    } catch (e) {
+      showToast(failMessage('merge the exercises', e, 'Nothing was changed, so try again.'), true);
+      return;
+    }
+    try {
       // goals is refetched alongside the name-keyed tables because a merge
       // rewrites goals.exercise_name too (step 9 of db.mergeExerciseNames) —
       // leaving goalsCache stale would show the Goals card still pointing at a
@@ -7733,7 +7754,7 @@ const App = (() => {
       const goalNote = result.goalsRenamed ? `, ${result.goalsRenamed} goal${result.goalsRenamed === 1 ? '' : 's'} retargeted` : '';
       showToast(`Merged ✓ (${result.historyCount} log ${result.historyCount === 1 ? 'entry' : 'entries'} updated${goalNote})`);
     } catch (e) {
-      showToast(failMessage('merge the exercises', e, 'Nothing was changed, so try again.'), true);
+      showToast(`Merged ✓, but this page couldn't load the result. Reload the page to see "${canonical}" everywhere.`, true);
     }
   }
 
@@ -9272,6 +9293,7 @@ const App = (() => {
   // Story: DECISIONS.md#add-exercise-wizard.
   async function saveEdit() {
     if (!exerciseEditor) return;
+    if (repsFieldUnreadable()) return;
     const oldName = exerciseEditor.name;
     const val = id => document.getElementById(id).value.trim();
     const newEx = {
@@ -9969,9 +9991,19 @@ const App = (() => {
     showToast(`Filled in "${s.name}"`);
   }
 
+  // Default reps is a number field, and a number field reads as '' for
+  // anything it can't parse ("8-12", "30 sec"), so the save went ahead with
+  // the default silently wiped. Refused instead, with the reason.
+  function repsFieldUnreadable() {
+    if (!document.getElementById('new-ex-reps')?.validity.badInput) return false;
+    showToast('Default reps must be one number, e.g. 10 (a range like 8-12 can\'t be saved)', 'hint');
+    return true;
+  }
+
   async function addExercise() {
     const ld = document.getElementById('setting-lift-select').value;
     if (!ld) { showToast('Add a routine first', 'hint'); return; }
+    if (repsFieldUnreadable()) return;
     const newEx = {
       name:     document.getElementById('new-ex-name').value.trim(),
       emoji:    document.getElementById('new-ex-emoji').value || '💪',
@@ -10675,7 +10707,9 @@ const App = (() => {
       // lies about half the row.
       return list.map(s => setLabel(name, s)).join(', ');
     }
-    return list.map(s => `${s.weight}×${s.reps}`).join(', ');
+    // setLabel too: it keeps the weighted "30×12" shape, and writes a set
+    // logged with reps but no weight as "10 reps" rather than "×10".
+    return list.map(s => setLabel(name, s)).join(', ');
   }
 
   // EVERY note ever left on one exercise, newest first — what getLastSession
@@ -11504,6 +11538,10 @@ const App = (() => {
       await api.patch(`/api/history/${id}`, updated);
       const idx = historyCache.findIndex(h => h.id === id);
       if (idx !== -1) historyCache[idx] = updated;
+      // A new date moves the timestamp, and historyCache is newest-first by
+      // timestamp (the server's ORDER BY): getLastSession, the set pre-fill
+      // and the overload tip all take the first match as the most recent.
+      if (updated.timestamp !== original.timestamp) historyCache.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
       buildPRMap();
       renderWeekStrip();
       historyEditId = null;
@@ -13195,6 +13233,8 @@ const App = (() => {
     if (open) prExpanded[id] = true; else delete prExpanded[id];
     try { localStorage.setItem(prExpandedKey(), JSON.stringify(prExpanded)); } catch (e) { /* in-memory only */ }
   }
+  const PR_OTHER_KEY = '__other__';
+
   function loadPrSport() {
     try { return localStorage.getItem(prSportKey()) || ''; } catch (e) { return ''; }
   }
@@ -14865,8 +14905,11 @@ const App = (() => {
     out.push(...own);
     // Other: one group per sport, its rows relabelled where the bare label
     // only made sense under the sport's own group titles ("~3k" -> "~3k pace").
+    // Keyed so no activity type can share it: Garmin has a real 'other'
+    // typeKey, and a type labelled "Other" slugs to it, which put two tabs
+    // and two panes under one key.
     if (small.length) {
-      out.push({ key: 'other', emoji: '🏅', label: 'Other', groups: small.map(sp => ({
+      out.push({ key: PR_OTHER_KEY, emoji: '🏅', label: 'Other', groups: small.map(sp => ({
         id: sp.key, title: `${sp.emoji} ${sp.label}`,
         rows: sp.groups.flatMap(g => g.rows).map(r => r.otherLabel ? { ...r, label: r.otherLabel } : r),
       })) });
@@ -14875,7 +14918,7 @@ const App = (() => {
     let n = 0;
     for (const sp of out) for (const g of sp.groups) for (const r of g.rows) {
       r.sport = sp.key;
-      r.groupTitle = sp.key === 'other' ? g.title : (g.fold ? g.title : `${sp.label} · ${g.title}`);
+      r.groupTitle = sp.key === PR_OTHER_KEY ? g.title : (g.fold ? g.title : `${sp.label} · ${g.title}`);
       r.domId = `pr-rec-${n++}`;
     }
     return out;
@@ -15838,11 +15881,14 @@ const App = (() => {
     const xs = [], ys = [];
 
     for (const item of liftEntriesIn(entries, start, end)) {
-      const ex = (item.exercises || []).find(e => e.name === exerciseName);
-      if (!ex) continue;
+      // Every block under this name, not the first: a session can hold two
+      // (a merge, or main sets plus a back-off block), as goalRawSeries and
+      // detectStalls already allow for.
+      const sets = (item.exercises || []).filter(e => e.name === exerciseName).flatMap(e => e.sets || []);
+      if (!sets.length) continue;
       const d = parseDateKey(item.date);
       if (!d || isNaN(d)) continue;
-      for (const s of (ex.sets || [])) {
+      for (const s of sets) {
         if (!isWorkingSet(s)) continue;
         const w = parseFloat(s.weight), r = parseFloat(s.reps);
         // DISCARD above MAX_E1RM_REPS (12), don't clamp — Epley diverges badly up there,
@@ -25803,6 +25849,9 @@ const App = (() => {
       renderWeekStrip();
       refreshCheckinBanners();
       renderAnalytics();
+      // The day popup that offers this ✕ is usually opened from the Calendar,
+      // whose cell dots, tint and month tiles count the cleared day.
+      if (document.getElementById('view-calendar')?.style.display === 'block') renderHistoryCalendar();
       return true;
     } catch (e) { showToast(failMessage('clear the check-in', e), true); return false; }
   }
@@ -31485,11 +31534,20 @@ const App = (() => {
     if (total < SEGMENT_EDITOR_MIN_M) { showToast('This route is too short to mark a segment on', 'hint'); return; }
     clearMapProfileCursor();
     const seg = preset ? preset.seg : null;
+    // The middle third to start with, but never closer than the
+    // SEGMENT_EDITOR_MIN_M moveSegmentEnd holds the ends to: on a route under
+    // 300 m a third is shorter than that, and under 150 m it was shorter than
+    // the server's own floor, so a save without a drag failed.
     const third = Math.round(total / 30) * 10;
+    let from = third, to = Math.floor(total / 10) * 10 - third;
+    if (to - from < SEGMENT_EDITOR_MIN_M) {
+      from = Math.max(0, Math.floor((total - SEGMENT_EDITOR_MIN_M) / 2));
+      to = Math.min(total, from + SEGMENT_EDITOR_MIN_M);
+    }
     segmentDraft = {
       route: r, pts, total, tl, seg, drag: null,
       lat: pts.map(p => p[0]), lon: pts.map(p => p[1]),
-      from: preset ? preset.from : third, to: preset ? preset.to : Math.floor(total / 10) * 10 - third,
+      from: preset ? preset.from : from, to: preset ? preset.to : to,
     };
     const pace = segmentStripPaceSVG(tl);
     const bands = segmentStripBandsSVG(r, total, seg && seg.id);
