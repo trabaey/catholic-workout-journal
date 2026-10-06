@@ -29790,6 +29790,11 @@ const App = (() => {
   const QUEST_RADIUS_KEY = 'wt_quest_radius';
   const QUEST_RADII_KM = [5, 10, 20];
   let questRadiusKm = (r => (QUEST_RADII_KM.includes(r) ? r : 10))(storedJSON(QUEST_RADIUS_KEY, 10));
+  // How far back an outing counts as EXPLORING a trail, in whole years, 0
+  // for all time (⚙ → Time range in Quests mode). Kept the same way.
+  const QUEST_YEARS_KEY = 'wt_quest_years';
+  const QUEST_YEARS = [0, 4, 3, 2, 1];
+  let questYears = (y => (QUEST_YEARS.includes(y) ? y : 2))(storedJSON(QUEST_YEARS_KEY, 2));
 
   // ── Pure maths ─────────────────────────────────────────────────────────────
 
@@ -30442,15 +30447,15 @@ const App = (() => {
   // 30 m like SEGMENT_MATCH: GPS, the 8 m simplification and OSM's own drawing
   // each add a few metres, and wider would let a parallel path cover this one.
   //
-  // `freshDays`: covered within this is EXPLORED; covered only before it has
-  // FADED. `doneShare` of a trail's length explored conquers it; under
+  // Covered within questYears is EXPLORED; covered only before it has FADED
+  // (questCutoff). `doneShare` of a trail's length explored conquers it; under
   // `touchShare` it is untouched, so a trail is "partial" only when you've
   // really been on it. `minVisitM`: an outing counts as a VISIT to the trail
   // (its "last explored" date) only when it covered this much of it, or half
   // of a shorter trail.
   //
   // `cellM`: the coverage index's grid, in metres on its flat projection.
-  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80, freshDays: 730,
+  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80,
                         doneShare: 0.8, touchShare: 0.1, minVisitM: 200, cellM: 100 };
 
   // THE COVERAGE INDEX for one area: every segment of every outing that
@@ -30675,7 +30680,7 @@ const App = (() => {
 
   // A trail's numbers INSIDE THE RING of `radiusM` around home, so the
   // length, the share explored and the km uncharted always agree with each
-  // other and with what is drawn. `cutoff` is the date key freshDays ago.
+  // other and with what is drawn. `cutoff` is questCutoff()'s date key.
   // Returns null for a trail with nothing inside the ring, else
   //   { totalM, freshM, everM, nearM, share, status, lastFresh, lastOld, runs, doneRuns }
   // with runs/doneRuns as [piece, fromM, toM] (gaps under two steps merged)
@@ -31516,8 +31521,9 @@ const App = (() => {
       : `${mapFiltersBodyHTML()}<div id="map-side-places">${mapPlacesBodyHTML()}</div>`;
   }
 
-  // In Quests mode the time range is not in play (quests look back their own
-  // two years), so it can't be what narrows the filter there.
+  // In Quests mode the route range is not in play, and its own lookback
+  // (questYears) decides how a trail is scored rather than filtering what is
+  // shown, so neither is what narrows the filter there.
   function mapFiltersNarrowed() {
     return (mapMode !== 'quests' && chartWindowDays('route-map', 0) !== 0) || mapTypeFilter !== null;
   }
@@ -31558,10 +31564,12 @@ const App = (() => {
         onclick="App.toggleMapType('${jsArg(t)}')">${escapeHTML(meta.emoji)} ${escapeHTML(meta.label)} <span class="map-chip-count">${n}</span></button>`;
     }).join('');
     // Quests mode keeps the activity chips (they decide which outings count)
-    // but has no time range: a trail is explored or not over QUEST_MATCH's
-    // own window, so a range here would change nothing and say otherwise.
+    // and has its own time range, the LOOKBACK: how far back an outing counts
+    // as exploring a trail (questYears). data-years, not data-days, so
+    // syncMapFilterUI's route range never lights these.
     const range = mapMode === 'quests'
-      ? `<div class="map-note" style="margin:0 4px 8px;">Quests count your outings from the last ${Math.round(QUEST_MATCH.freshDays / 365)} years.</div>`
+      ? `<div class="map-menu-ranges">${QUEST_YEARS.map(y => `<button type="button" class="map-mode-btn${y === questYears ? ' active' : ''}"
+          data-years="${y}" title="${y ? `Last ${y} year${y === 1 ? '' : 's'}` : 'All time'}" onclick="App.setQuestYears(${y})">${y ? `${y}y` : 'All'}</button>`).join('')}</div>`
       : `<div class="map-menu-ranges">${WINDOW_CHOICES.map(c => `<button type="button" class="map-mode-btn${c.days === days ? ' active' : ''}"
           data-days="${c.days}" title="${c.label}" onclick="App.setMapWindow(${c.days})">${c.face}</button>`).join('')}</div>`;
     return `<div class="map-menu-h">Time range</div>
@@ -32429,10 +32437,20 @@ const App = (() => {
     loadTrailArea();
   }
 
-  // The date key QUEST_MATCH.freshDays before today: on or after it is
-  // explored, before it has faded. Through dateKey, never toISOString.
+  // The date key questYears before today: on or after it is explored,
+  // before it has faded. '' for all time, which every date key is on or
+  // after. Calendar years, so a leap day never moves it (29 Feb lands on
+  // 1 Mar). Through dateKey, never toISOString.
   function questCutoff() {
-    return shiftDateKey(dateKey(new Date()), -QUEST_MATCH.freshDays);
+    if (!questYears) return '';
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - questYears);
+    return dateKey(d);
+  }
+
+  // " in the last 2 years", or '' for all time, after "explored".
+  function questWindowText() {
+    return questYears ? ` in the last ${questYears === 1 ? 'year' : `${questYears} years`}` : '';
   }
 
   // Whether a trail's bounds reach the box around the ring of radiusM about
@@ -32592,13 +32610,13 @@ const App = (() => {
     if (!q) { el.innerHTML = ''; return; }
     const { trail, sum } = q;
     const pct = Math.round(sum.share * 100);
-    const years = Math.round(QUEST_MATCH.freshDays / 365);
+    const within = questWindowText();
     const left = Math.max(0, sum.totalM - sum.freshM);
     const status = {
       uncharted: `<b>Uncharted.</b> You haven't been on this one.`,
-      faded: `<b>Faded.</b> Explored before, but not in the last ${years} years.`,
-      partial: `<b>${pct}% explored</b> in the last ${years} years · ${questKm(left)} to go.`,
-      conquered: `🏆 <b>Conquered.</b> ${pct}% explored in the last ${years} years.`,
+      faded: `<b>Faded.</b> Explored before, but not${within}.`,
+      partial: `<b>${pct}% explored</b>${within} · ${questKm(left)} to go.`,
+      conquered: `🏆 <b>Conquered.</b> ${pct}% explored${within}.`,
     }[sum.status];
     const kind = trail.kind === 'route'
       ? ({ hiking: 'Hiking route', foot: 'Walking route', walking: 'Walking route', running: 'Running route',
@@ -32888,6 +32906,21 @@ const App = (() => {
     if (!QUEST_RADII_KM.includes(km) || km === questRadiusKm) return;
     questRadiusKm = km;
     try { localStorage.setItem(QUEST_RADIUS_KEY, JSON.stringify(km)); } catch (e) { /* a view preference */ }
+    renderMapDetail();
+    syncMapSize();
+    refreshMapLayers();
+  }
+
+  // ⚙ → Time range in Quests mode. Like a chip, it leaves the menu open and
+  // never moves the map. Only the sums are redone: questsFor keys them on
+  // the cutoff, and the coverage itself does not depend on it.
+  function setQuestYears(y) {
+    if (!QUEST_YEARS.includes(y) || y === questYears) return;
+    questYears = y;
+    try { localStorage.setItem(QUEST_YEARS_KEY, JSON.stringify(y)); } catch (e) { /* a view preference */ }
+    for (const b of document.querySelectorAll('.map-menu [data-years], #map-side [data-years]')) {
+      b.classList.toggle('active', Number(b.dataset.years) === y);
+    }
     renderMapDetail();
     syncMapSize();
     refreshMapLayers();
@@ -34928,7 +34961,7 @@ const App = (() => {
     toggleOutingLayer, addOutingPhotos, openPhotoViewer, closePhotoViewer, stepPhotoViewer, togglePhotoViewerMenu, photoViewerOpenDay, photoViewerOpenRoute, deleteViewerPhoto, photoTakenAt, photoRoutePosition, fitMapPlace, pinMapView, goToPinnedView,
     openSegmentEditor, closeSegmentEditor, saveSegment, adjustSegment, selectSegmentEffort,
     selectSegment, openSegment, renderSegmentPanel, startSegmentRename, saveSegmentRename, deleteSegment,
-    selectQuest, setQuestRadius, refreshTrails,
+    selectQuest, setQuestRadius, setQuestYears, refreshTrails,
     setChartWindow, toggleWindowPicker, chartWindowDays, toggleWorkingSetsMuscle, toggleRecoveryMuscle,
     renderJournalView, startJournalEdit, cancelJournalEdit, saveJournalEdit, openJournalDay,
     startJournalCheckinEdit, cancelJournalCheckinEdit, saveJournalCheckinEdit,
