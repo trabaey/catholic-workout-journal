@@ -138,16 +138,19 @@ app.use((req, res, next) => {
 // gets its own ETag, as HTTP requires of a different byte stream; res.send()
 // then answers a matching If-None-Match with a 304 itself.
 const gzipCache = new Map(); // slot -> { body, etag, gz }
+const bodyEtag = body => '"' + crypto.createHash('sha1').update(body).digest('base64url') + '"';
 function sendCompressible(req, res, slot, body, type) {
   let entry = gzipCache.get(slot);
   if (!entry || entry.body !== body) {
-    entry = {
-      body,
-      etag: '"' + crypto.createHash('sha1').update(body).digest('base64url') + '"',
-      gz: zlib.gzipSync(body),
-    };
+    entry = { body, etag: bodyEtag(body), gz: zlib.gzipSync(body) };
     gzipCache.set(slot, entry);
   }
+  sendPrepared(req, res, entry, type);
+}
+
+// The sending half, for a body whose { body, etag, gz } is kept elsewhere
+// (the trails cache gzips its files off the event loop).
+function sendPrepared(req, res, entry, type) {
   res.vary('Accept-Encoding');
   res.type(type);
   if (req.acceptsEncodings('gzip', 'identity') === 'gzip') {
@@ -156,7 +159,7 @@ function sendCompressible(req, res, slot, body, type) {
     res.send(entry.gz);
   } else {
     res.set('ETag', entry.etag);
-    res.send(body);
+    res.send(entry.body);
   }
 }
 
@@ -4480,7 +4483,7 @@ const TRAILS_URLS = TRAILS_API === 'off' ? [] : TRAILS_API.split(',').map(s => s
 // A month: trails change slowly, and Overpass asks regular users to keep to
 // about a hundred queries a day across EVERY install of an app. A stale file
 // is still served at once while the refresh runs. ↻ Refresh in the panel
-// asks sooner, but never more than hourly.
+// asks sooner, but never more than hourly, and says so when it won't.
 const TRAILS_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const TRAILS_REFRESH_MIN_MS = 60 * 60 * 1000;
 // After a failure the area is set aside, so a panel that polls can't hammer a
@@ -4488,6 +4491,9 @@ const TRAILS_REFRESH_MIN_MS = 60 * 60 * 1000;
 // for.
 const TRAILS_RETRY_MS = 10 * 60 * 1000;
 const TRAILS_RATE_RETRY_MS = 30 * 60 * 1000;
+// An area whose answer is too big to read (trails.js MAX_ANSWER_BYTES) will
+// be as big an hour from now: a day, so polling can't keep downloading it.
+const TRAILS_BIG_RETRY_MS = 24 * 60 * 60 * 1000;
 
 // THE CACHE IS A FILE PER AREA under data/, like the liturgical calendar: a
 // third party's data, re-derivable at any time, so in neither backup path
@@ -4495,22 +4501,33 @@ const TRAILS_RATE_RETRY_MS = 30 * 60 * 1000;
 // is in the name, so a file trails.js no longer writes is simply missing.
 // Deleting one forces a refetch.
 const trailsCachePath = key => path.join(DATA_DIR, `trails-v${trails.TRAILS_FORMAT}-${key.replace(',', '_')}.json`);
-const trailsFileMemo = new Map();   // key -> { mtimeMs, text, fetched_at }
+// The files last served, ready to send: { mtimeMs, fetched_at, body, etag,
+// gz }. Only TRAILS_MEMO_MAX areas, least recently asked for out first, since
+// a file for a dense area is several MB and each is held twice (plain and
+// gzipped). Read and gzipped off the event loop: gzipSync on a file that size
+// would hold every other request.
+const TRAILS_MEMO_MAX = 3;
+const trailsFileMemo = new Map();
+const gzipAsync = body => new Promise((resolve, reject) => zlib.gzip(body, (e, gz) => (e ? reject(e) : resolve(gz))));
 
-function readTrailsCache(key) {
+async function readTrailsCache(key) {
   const file = trailsCachePath(key);
   let st;
-  try { st = fs.statSync(file); } catch (e) { return null; }
-  const hit = trailsFileMemo.get(key);
-  if (hit && hit.mtimeMs === st.mtimeMs) return hit;
-  try {
-    const text = fs.readFileSync(file, 'utf8');
-    const entry = { mtimeMs: st.mtimeMs, text, fetched_at: JSON.parse(text).fetched_at || 0 };
-    trailsFileMemo.set(key, entry);
-    return entry;
-  } catch (e) {
-    return null;   // a truncated file is no file; the next fetch replaces it
+  try { st = await fs.promises.stat(file); } catch (e) { return null; }
+  let entry = trailsFileMemo.get(key);
+  if (!entry || entry.mtimeMs !== st.mtimeMs) {
+    try {
+      const body = await fs.promises.readFile(file, 'utf8');
+      entry = { mtimeMs: st.mtimeMs, fetched_at: JSON.parse(body).fetched_at || 0, body,
+                etag: bodyEtag(body), gz: await gzipAsync(body) };
+    } catch (e) {
+      return null;   // a truncated file is no file; the next fetch replaces it
+    }
   }
+  trailsFileMemo.delete(key);
+  trailsFileMemo.set(key, entry);
+  while (trailsFileMemo.size > TRAILS_MEMO_MAX) trailsFileMemo.delete(trailsFileMemo.keys().next().value);
+  return entry;
 }
 
 // ONE OVERPASS REQUEST AT A TIME across every area: the public servers limit
@@ -4539,7 +4556,10 @@ function startTrailsFetch(area) {
     } catch (e) {
       if (e.fatal) console.error(`Trails for ${area.key}: the query was REFUSED, fix it:`, e.message);
       else console.error(`Trails for ${area.key} unavailable:`, e.message);
-      trailsHeld.set(area.key, {
+      trailsHeld.set(area.key, e.tooLarge ? {
+        until: Date.now() + TRAILS_BIG_RETRY_MS,
+        error: 'There are more trails around your home base than this server will chart.',
+      } : {
         until: Date.now() + (e.rateLimited ? TRAILS_RATE_RETRY_MS : TRAILS_RETRY_MS),
         error: e.rateLimited ? 'OpenStreetMap\'s trail server is busy. Try again in half an hour.'
                              : 'Couldn\'t reach OpenStreetMap\'s trail server.',
@@ -4556,16 +4576,30 @@ function startTrailsFetch(area) {
 // refreshed behind it). Without one, 202 {status:'fetching'} and the panel
 // asks again in a few seconds; 502 once a fetch has failed, until the area's
 // retry time is up.
-app.get('/api/trails', (req, res) => {
+//
+// ↻ REFRESH (refresh=1) with a file cached answers what became of the ask,
+// never the file: {status:'refreshing'} while a fetch runs, then
+// {status:'recent', retry_at} once the file is under an hour old (the panel
+// then asks for it plainly), or {status:'held', error, retry_at} while the
+// area is set aside after a failure. So the panel can say a refresh was
+// turned down rather than wait for a file that isn't coming.
+const queryNumber = v => (typeof v === 'string' && v.trim() ? Number(v) : NaN);
+app.get('/api/trails', async (req, res) => {
   try {
     if (!TRAILS_URLS.length) return res.status(503).json({ error: 'Trail lookups are turned off on this server (WT_TRAILS_API=off).' });
-    const lat = Number(req.query.lat), lon = Number(req.query.lon);
-    const area = req.query.lat != null && req.query.lon != null ? trails.areaFor(lat, lon) : null;
+    const area = trails.areaFor(queryNumber(req.query.lat), queryNumber(req.query.lon));
     if (!area) return res.status(400).json({ error: 'lat and lon are required' });
-    const cached = readTrailsCache(area.key);
+    const cached = await readTrailsCache(area.key);
     const age = cached ? Date.now() - cached.fetched_at : Infinity;
-    if (age > (req.query.refresh === '1' ? TRAILS_REFRESH_MIN_MS : TRAILS_FRESH_MS)) startTrailsFetch(area);
-    if (cached) return sendCompressible(req, res, `trails:${area.key}`, cached.text, 'json');
+    const refresh = req.query.refresh === '1';
+    if (age > (refresh ? TRAILS_REFRESH_MIN_MS : TRAILS_FRESH_MS)) startTrailsFetch(area);
+    if (cached && refresh) {
+      if (trailsPending.has(area.key)) return res.json({ status: 'refreshing' });
+      const held = trailsHeld.get(area.key);
+      if (held && held.until > Date.now()) return res.json({ status: 'held', error: held.error, retry_at: held.until });
+      return res.json({ status: 'recent', retry_at: cached.fetched_at + TRAILS_REFRESH_MIN_MS });
+    }
+    if (cached) return sendPrepared(req, res, cached, 'json');
     if (trailsPending.has(area.key)) return res.status(202).json({ status: 'fetching' });
     const held = trailsHeld.get(area.key);
     return res.status(502).json({ error: held ? held.error : 'Trails unavailable.' });
