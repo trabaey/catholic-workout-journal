@@ -1559,7 +1559,7 @@ function validateRouteFields(route) {
   // profile. Same optional-and-[] rule as times, but an entry may be null (no
   // reading there). The ranges only catch a garbled value; anything a body or
   // a planet allows passes.
-  for (const [key, lo, hi] of [['elev', -500, 9000], ['hr', 20, 260]]) {
+  for (const [key, lo, hi] of ROUTE_SAMPLE_RANGES) {
     const v = route[key];
     if (v == null) continue;
     if (!Array.isArray(v)) return `${key} must be an array`;
@@ -1640,7 +1640,19 @@ app.get('/api/activity-routes/:externalId', (req, res) => {
 // Validates and stores one route; returns the validation error, or null once
 // stored. The one writer of activity_routes from a sync: this route's POST
 // (garmin_sync.py) and the Apple Health export import both go through it.
+// The ranges an elev or hr reading must fall in (validateRouteFields).
+const ROUTE_SAMPLE_RANGES = [['elev', -500, 9000], ['hr', 20, 260]];
+
 function storeActivityRoute(route, userId) {
+  // A single garbled reading (an HR dropout of 0, an elevation spike before a
+  // GPS fix) becomes a gap in the profile rather than a reason to refuse the
+  // route. A refused route isn't recorded as missing either, so the sync
+  // fetched it again every night, and a few of them could fill its batch.
+  for (const [key, lo, hi] of ROUTE_SAMPLE_RANGES) {
+    if (Array.isArray(route[key])) {
+      route = { ...route, [key]: route[key].map(x => x === null || (Number.isFinite(x) && x >= lo && x <= hi) ? x : null) };
+    }
+  }
   const err = validateRouteFields(route);
   if (err) return err;
   const pts = decodePolyline(route.polyline);
@@ -2984,18 +2996,28 @@ function parseEnvFile(filePath) {
 // two agree.
 function readGarminCredentials(userId) {
   const own = parseEnvFile(garminEnvPath(userId));
-  if (own?.GARMIN_EMAIL && own?.GARMIN_PASSWORD) return { email: own.GARMIN_EMAIL, password: own.GARMIN_PASSWORD };
+  if (own?.GARMIN_EMAIL && envPassword(own)) return { email: own.GARMIN_EMAIL, password: envPassword(own) };
   if (own) return null;
   if (userId === 1) {
     for (const p of legacyGarminEnvPaths()) {
       const parsed = parseEnvFile(p);
-      if (parsed?.GARMIN_EMAIL && parsed?.GARMIN_PASSWORD) return { email: parsed.GARMIN_EMAIL, password: parsed.GARMIN_PASSWORD };
+      if (parsed?.GARMIN_EMAIL && envPassword(parsed)) return { email: parsed.GARMIN_EMAIL, password: envPassword(parsed) };
     }
   }
   return null;
 }
+// The password is written in base64 under its own key. The file is KEY=value
+// lines that both readers trim, and garmin_sync.py also strips quotes, so a
+// password that began or ended with a space or a quote reached Garmin
+// altered, and failed as a wrong password. A plain GARMIN_PASSWORD is still
+// read, for files written by hand or before this.
 function writeGarminCredentials(userId, email, password) {
-  writeFileAtomic(garminEnvPath(userId), `GARMIN_EMAIL=${email}\nGARMIN_PASSWORD=${password}\n`, { mode: 0o600 });
+  const encoded = Buffer.from(password, 'utf8').toString('base64');
+  writeFileAtomic(garminEnvPath(userId), `GARMIN_EMAIL=${email}\nGARMIN_PASSWORD_B64=${encoded}\n`, { mode: 0o600 });
+}
+function envPassword(parsed) {
+  if (parsed?.GARMIN_PASSWORD_B64) return Buffer.from(parsed.GARMIN_PASSWORD_B64, 'base64').toString('utf8');
+  return parsed?.GARMIN_PASSWORD || null;
 }
 // User 1 gets an empty file instead of none. Deleting it would hand the
 // account straight back to the legacy chain, so Disconnect would report

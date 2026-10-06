@@ -33541,6 +33541,15 @@ const App = (() => {
   // under a running sync.
   const GARMIN_PROGRESS_POLL_MS = 1000;
   async function syncGarmin(mfaCode, slot = 'settings') {
+    // A code is pasted from an email as often as typed: "123 456" or
+    // "123-456" is the same code, so only its digits are sent. One that still
+    // isn't 4-8 digits is refused HERE, with the box left open: the server's
+    // 400 used to take the generic failure path, which closed the box, and
+    // the only way on was a new sync and a new emailed code.
+    if (mfaCode !== undefined) {
+      mfaCode = String(mfaCode).replace(/\D/g, '');
+      if (!/^\d{4,8}$/.test(mfaCode)) { showToast("Type the code from Garmin's email: 4 to 8 digits", 'hint'); return; }
+    }
     const btnEl   = () => document.getElementById(garminSyncId(slot, 'sync-btn'));
     const btn     = btnEl();
     const status  = document.getElementById(garminSyncId(slot, 'sync-status'));
