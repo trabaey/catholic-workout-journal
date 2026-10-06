@@ -30432,7 +30432,11 @@ const App = (() => {
   // alone made a short trail "partly explored". `minRunM`: a covered stretch
   // shorter than this is dropped too, for a street you ran down for half a
   // block beside a path. It counts the nearM an outing reaches past each of
-  // its own ends, so 120 m is about 60 m actually on the trail.
+  // its own ends, so 120 m is about 60 m actually on the trail. `maxGapM`:
+  // the other way round, an UNcovered stretch up to this long with cover
+  // beside it counts as covered, for a track that cuts a bend or turns at a
+  // junction and misses a sample or three of a trail it plainly followed --
+  // each of which otherwise drew as a lone rose dot on a walked trail.
   //
   // 30 m like SEGMENT_MATCH: GPS, the 8 m simplification and OSM's own drawing
   // each add a few metres, and wider would let a parallel path cover this one.
@@ -30445,7 +30449,7 @@ const App = (() => {
   // of a shorter trail.
   //
   // `cellM`: the coverage index's grid, in metres on its flat projection.
-  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, freshDays: 730,
+  const QUEST_MATCH = { stepM: 20, nearM: 30, minCos: 0.7, minRunM: 120, maxGapM: 80, freshDays: 730,
                         doneShare: 0.8, touchShare: 0.1, minVisitM: 200, cellM: 100 };
 
   // THE COVERAGE INDEX for one area: every segment of every outing that
@@ -30500,9 +30504,10 @@ const App = (() => {
   // lies on piece pi[i] from a[i] to b[i] metres along it, homeM[i] from home,
   // and was last covered by outing route[i] (an index into index.ids/dates,
   // newest first), or -1. `home` is [lat, lon]. Runs of cover shorter than
-  // minRunM are cleared here, so questSummary only ever adds up. Pure,
+  // minRunM are cleared here, and then gaps up to maxGapM between what is
+  // left are filled, so questSummary only ever adds up. Pure,
   // self-contained apart from EARTH_R_M, and exported for testing.
-  function trailCoverage(trail, index, home, { stepM, nearM, minCos, minRunM } = QUEST_MATCH) {
+  function trailCoverage(trail, index, home, { stepM, nearM, minCos, minRunM, maxGapM } = QUEST_MATCH) {
     const { ky, kx, cellM, buckets } = index;
     const hy = (home[0] - index.lat) * ky, hx = (home[1] - index.lon) * kx;
     const pi = [], a = [], b = [], homeM = [], route = [];
@@ -30543,6 +30548,24 @@ const App = (() => {
       let j = i;
       while (j + 1 < route.length && route[j + 1] >= 0 && pi[j + 1] === pi[i]) j++;
       if (b[j] - a[i] < minRunM) for (let k = i; k <= j; k++) route[k] = -1;
+      i = j + 1;
+    }
+    // Then fill gaps up to maxGapM, within one piece, that have cover on
+    // both sides, or on one side and the piece's end on the other (a
+    // junction). After the clearing, so a fill only ever bridges cover that
+    // already counts and can't lift a half-block run past minRunM. A filled
+    // gap takes the OLDER visit beside it (the larger index), so it never
+    // looks fresher than the walking around it. A piece with no cover at
+    // all is left alone: a short stub nobody walked is still uncharted.
+    for (let i = 0; i < route.length;) {
+      if (route[i] >= 0) { i++; continue; }
+      let j = i;
+      while (j + 1 < route.length && route[j + 1] < 0 && pi[j + 1] === pi[i]) j++;
+      const before = i > 0 && pi[i - 1] === pi[i] ? route[i - 1] : -1;
+      const after = j + 1 < route.length && pi[j + 1] === pi[i] ? route[j + 1] : -1;
+      if (b[j] - a[i] <= maxGapM && (before >= 0 || after >= 0)) {
+        for (let k = i; k <= j; k++) route[k] = Math.max(before, after);
+      }
       i = j + 1;
     }
     return { id: trail.id, n: route.length, pi, a, b, homeM, route };
