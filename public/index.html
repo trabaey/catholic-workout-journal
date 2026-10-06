@@ -576,7 +576,10 @@ body.rest-active #history-subview-map { height: calc(100vh - 1rem - 48px - var(-
 /* The outing summary (outingSummaryHTML): a small static map, the profile
    strip, the photo row. See the comment above outingSummaryHTML. */
 .outing-summary { margin-top: 10px; }
-.outing-map { height: 180px; border-radius: var(--r-md); border: 1px solid var(--surface); overflow: hidden; background: #0b1220; cursor: pointer; }
+/* Its own stacking context, as #route-map's comment explains: Leaflet's panes
+   (400) and control corners (1000) otherwise rank in the page's, over the
+   sticky Journal month header, the rest bar and the popups' backdrops. */
+.outing-map { position: relative; z-index: 0; height: 180px; border-radius: var(--r-md); border: 1px solid var(--surface); overflow: hidden; background: #0b1220; cursor: pointer; }
 /* .leaflet-container too: leaflet.css loads after this sheet, so two classes lose to its own two. */
 .outing-map.leaflet-container .leaflet-control-attribution { background: rgba(9,9,11,0.72); color: var(--t4); font-size: var(--fs-micro); line-height: 1.35; }
 .outing-map.leaflet-container .leaflet-control-attribution a { color: #60a5fa; }
@@ -2339,7 +2342,7 @@ const App = (() => {
   // Story: DECISIONS.md#any-activity-is-first-class.
   function typeOptionsHTML(list, selected) {
     const opt = w =>
-      `<option value="${escapeHTML(String(w.value))}"${String(w.value) === String(selected) ? ' selected' : ''}>${w.emoji} ${escapeHTML(w.name)}</option>`;
+      `<option value="${escapeHTML(String(w.value))}"${String(w.value) === String(selected) ? ' selected' : ''}>${escapeHTML(w.emoji)} ${escapeHTML(w.name)}</option>`;
     const curated = list.filter(w => w.group !== 'other' && w.value !== REST_TYPE.value);
     const others  = list.filter(w => w.group === 'other');
     const rest    = list.filter(w => w.value === REST_TYPE.value);
@@ -4250,7 +4253,7 @@ const App = (() => {
     const hit = findThrowbackDay(checkinDayStr());
     if (!hit) return '';
     const w = gatherDayWorkouts(hit.date).find(x => x.type !== REST_TYPE.value);
-    const what = w ? `${w.emoji} ${escapeHTML(w.title)}` : '📝 journal';
+    const what = w ? `${escapeHTML(w.emoji)} ${escapeHTML(w.title)}` : '📝 journal';
     return `<span class="tb-chip throwback-badge" onclick="App.showDayDetailPopup('${hit.date}')" title="${escapeHTML(throwbackLabel(hit))}">🕰️ ${THROWBACK_YEAR_NAMES[hit.years] || `${hit.years} years`} ago: ${what}</span>`;
   }
 
@@ -5473,7 +5476,7 @@ const App = (() => {
       return `<div class="exercise-card lift-ex-card" id="lift-ex-${ei}"><div class="ex-main">
         <div class="ex-header">
           <div class="ex-info">
-            <span>${exInfo.emoji ? exInfo.emoji + ' ' : ''}${escapeHTML(exInfo.name)}${
+            <span>${exInfo.emoji ? escapeHTML(exInfo.emoji) + ' ' : ''}${escapeHTML(exInfo.name)}${
               countPR
                 ? (exPR ? `<span class="pr-tag">PR ${prValueLabel(exPR)}</span>` : '')
                 : (currentPR > 0 ? `<span class="pr-tag">PR ${currentPR} lbs${exPR.reps ? ` × ${exPR.reps}` : ''}</span>` : '')
@@ -5591,7 +5594,7 @@ const App = (() => {
       const emoji = routine[ei]?.emoji;
       const dots = (ex.sets || []).map(s => `<i${s.done ? ' class="done"' : ''}></i>`).join('');
       return `<button type="button" class="lift-check-row${finished(ex) ? ' finished' : ''}" onclick="App.scrollToLiftExercise(${ei})">
-        <span class="lcr-name">${emoji ? emoji + ' ' : ''}${escapeHTML(ex._name)}</span><span class="lcr-dots">${dots}</span></button>`;
+        <span class="lcr-name">${emoji ? escapeHTML(emoji) + ' ' : ''}${escapeHTML(ex._name)}</span><span class="lcr-dots">${dots}</span></button>`;
     }).join('');
     return `<div class="lift-progress-head">
         <span class="lift-timer-elapsed lift-progress-clock${d?.timerStart ? '' : ' paused'}">${formatElapsedMMSS(liftTimerElapsedMs(d))}</span>
@@ -6419,7 +6422,7 @@ const App = (() => {
     const rpe = d.rpe ?? item.rpe ?? null;
     return `<div class="exercise-card" id="annot-card-${id}">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
-          <span style="font-weight:700;color:var(--t1);">${emoji} ${escapeHTML(item.name || label)}</span>
+          <span style="font-weight:700;color:var(--t1);">${escapeHTML(emoji)} ${escapeHTML(item.name || label)}</span>
           <span style="font-size:var(--fs-body);color:var(--t3);white-space:nowrap;">${escapeHTML(displayDate(item.date))}</span>
         </div>
         ${workoutDetailHTML(item)}
@@ -6814,7 +6817,7 @@ const App = (() => {
       <div style="margin-bottom:8px;">
         <div class="settings-row">
           <div class="emoji-trigger" onclick="App.toggleRoutineEmojiPicker('${r.id}')" style="padding:6px;">
-            <span class="preview" id="routine-${r.id}-preview">${r.emoji}</span>
+            <span class="preview" id="routine-${r.id}-preview">${escapeHTML(r.emoji)}</span>
           </div>
           <input type="hidden" id="routine-${r.id}-emoji" value="${escapeHTML(r.emoji)}">
           <input class="set-input" id="routine-${r.id}-name" value="${escapeHTML(r.name)}" style="flex:1;margin-bottom:0;"
@@ -7087,7 +7090,7 @@ const App = (() => {
     const liveRowHtml = ({routineId, routineName, index, ex}) => `
       <div class="settings-row">
         <div style="flex:1;">
-          <div style="font-weight:600;font-size:var(--fs-emph);">${ex.emoji ? ex.emoji+' ' : ''}${escapeHTML(ex.name)}</div>
+          <div style="font-weight:600;font-size:var(--fs-emph);">${ex.emoji ? escapeHTML(ex.emoji)+' ' : ''}${escapeHTML(ex.name)}</div>
           <div style="font-size:var(--fs-micro);color:var(--t4);">${escapeHTML(routineName)}</div>
         </div>
         <select class="set-input" style="margin-bottom:0;width:auto;" onchange="App.setExerciseCategory('${routineId}',${index},this.value)">
@@ -7789,7 +7792,7 @@ const App = (() => {
     return `<div style="margin-bottom:8px;">
       <div class="settings-row">
         <div class="emoji-trigger" onclick="App.toggleActivityTypeEmojiPicker('${jsArg(scope)}','${jsArg(key)}')" style="padding:6px;">
-          <span class="preview" id="atype-${scope}-${key}-preview">${t.emoji}</span>
+          <span class="preview" id="atype-${scope}-${key}-preview">${escapeHTML(t.emoji)}</span>
         </div>
         <input type="hidden" id="atype-${scope}-${key}-emoji" value="${escapeHTML(t.emoji)}">
         <input class="set-input" id="atype-${scope}-${key}-label" value="${escapeHTML(t.label)}" style="flex:1;margin-bottom:0;" placeholder="Display name"
@@ -9205,7 +9208,7 @@ const App = (() => {
       const exIsBw = isWeightless(ex.name);
       const exIsTimed = isTimed(ex.name);
       return `<div class="settings-row">
-        <div style="font-size:24px;padding-right:4px;">${ex.emoji||'💪'}</div>
+        <div style="font-size:24px;padding-right:4px;">${escapeHTML(ex.emoji||'💪')}</div>
         <div style="flex:1;">
           <div style="font-weight:600;font-size:var(--fs-emph);">${escapeHTML(ex.name)}</div>
           <div style="font-size:var(--fs-caption);color:var(--t3);">${dw !== '' ? (exIsBw ? (parseFloat(dw) < 0 ? escapeHTML(formatLoad(dw, true)) : '+' + escapeHTML(String(dw)) + ' lbs') : escapeHTML(String(dw))+' lbs') : ''}${dw !== '' && ex.reps ? ' · ' : ''}${ex.reps ? (exIsTimed ? formatHold(ex.reps) : escapeHTML(ex.reps)+' reps') : ''} · ${ex.sets} sets${ex.rest_sec ? ` · ${formatHold(ex.rest_sec)} rest` : ''}${ex.video ? ' · ▶ video' : ''}</div>
@@ -14951,7 +14954,7 @@ const App = (() => {
       sp.groups.map(g => prGroupHTML(sp, g)).join('')}</div>`).join('');
     const records = sports.flatMap(sp => sp.groups.flatMap(g => g.rows));
     prRecordIndex = new Map(records.map(r => [r.key, r]));
-    const tabs = sports.map(sp => `<button type="button" class="sub-tab-btn pr-sport-tab" data-pr-sport="${escapeHTML(sp.key)}" onclick="App.showPRSport('${jsArg(sp.key)}')">${sp.emoji} ${escapeHTML(sp.label)}${
+    const tabs = sports.map(sp => `<button type="button" class="sub-tab-btn pr-sport-tab" data-pr-sport="${escapeHTML(sp.key)}" onclick="App.showPRSport('${jsArg(sp.key)}')">${escapeHTML(sp.emoji)} ${escapeHTML(sp.label)}${
       records.some(r => r.sport === sp.key && r.fresh) ? '<span class="pr-sport-dot" title="New record"></span>' : ''}</button>`).join('');
 
     el.innerHTML = `${prFreshStripHTML(records)}
@@ -18803,7 +18806,7 @@ const App = (() => {
       // uniform than to argue case by case. Absolute km/week, never a %.
       const delta = span.all ? '' : metricDelta(rate - perWeek(prevTotals[t] || 0, WINDOW_DAYS));
       return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-        <div style="width:88px;font-size:var(--fs-caption);font-weight:700;color:var(--t2);">${emoji} ${escapeHTML(label)}</div>
+        <div style="width:88px;font-size:var(--fs-caption);font-weight:700;color:var(--t2);">${escapeHTML(emoji)} ${escapeHTML(label)}</div>
         <div style="flex:1;height:16px;background:var(--page);border-radius:var(--r-sm);overflow:hidden;">
           <div style="height:100%;width:${pct}%;background:#22d3ee;transition:width 0.3s;"></div>
         </div>
@@ -21242,7 +21245,7 @@ const App = (() => {
       }).join('');
       return `<div style="margin-bottom:7px;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:var(--fs-micro);color:var(--t3);">
-          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.emoji} ${escapeHTML(r.label)}</span>
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(r.emoji)} ${escapeHTML(r.label)}</span>
           <span style="color:var(--t4);white-space:nowrap;padding-left:8px;">${hits}/${comparable.length}</span>
         </div>
         <svg width="100%" height="${STRIP_H}" viewBox="0 0 ${W} ${STRIP_H}" preserveAspectRatio="none" style="display:block;">
@@ -22389,7 +22392,7 @@ const App = (() => {
       ? `<select class="set-input" style="margin-bottom:10px;" onchange="App.setPaceType(this.value)">
           ${typesWithRows.map(t => {
             const { label, emoji } = labelFor(t.type);
-            return `<option value="${t.type}"${t.type === active.type ? ' selected' : ''}>${emoji} ${escapeHTML(label)}</option>`;
+            return `<option value="${t.type}"${t.type === active.type ? ' selected' : ''}>${escapeHTML(emoji)} ${escapeHTML(label)}</option>`;
           }).join('')}
         </select>`
       : '';
@@ -22397,7 +22400,7 @@ const App = (() => {
     const { label, emoji } = labelFor(active.type);
     return `<div style="margin-bottom:2px;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:4px 0 10px;">
-        <div class="card-title">${cardTitleHTML(`${emoji} Pace trend — ${escapeHTML(label)}`, ASK)}</div>
+        <div class="card-title">${cardTitleHTML(`${escapeHTML(emoji)} Pace trend — ${escapeHTML(label)}`, ASK)}</div>
         ${chartWindowControlHTML('pace', 0)}
       </div>
       ${picker}
@@ -22608,12 +22611,12 @@ const App = (() => {
     const picker = types.length > 1
       ? `<select class="set-input" style="margin:8px 0 2px;" onchange="App.setWeatherPaceType(this.value)">
           ${types.map(t => { const m = typeLabelEmoji(t);
-            return `<option value="${escapeHTML(t)}"${t === type ? ' selected' : ''}>${m.emoji} ${escapeHTML(m.label)}</option>`; }).join('')}
+            return `<option value="${escapeHTML(t)}"${t === type ? ' selected' : ''}>${escapeHTML(m.emoji)} ${escapeHTML(m.label)}</option>`; }).join('')}
         </select>`
       : '';
 
     return `<div class="exercise-card vol-chart" style="margin-bottom:12px;">
-      <div class="ex-header">${cardTitleHTML(`${TITLE}${types.length > 1 ? '' : ` — ${emoji} ${escapeHTML(label)}`}`, ASK)}${chartWindowControlHTML('weather-pace', 0)}</div>
+      <div class="ex-header">${cardTitleHTML(`${TITLE}${types.length > 1 ? '' : ` — ${escapeHTML(emoji)} ${escapeHTML(label)}`}`, ASK)}${chartWindowControlHTML('weather-pace', 0)}</div>
       ${picker}
       <p style="font-size:var(--fs-body);color:var(--t2);margin:8px 0 6px;line-height:1.45;">${headline}</p>
       <svg width="100%" viewBox="-${AXIS_W} 0 ${W + AXIS_W} ${H + 12}" style="overflow:visible;">
@@ -23044,7 +23047,7 @@ const App = (() => {
       ? `<select class="set-input" style="margin-bottom:10px;" onchange="App.setHrType(this.value)">
           ${usable.map(t => {
             const { label, emoji } = labelFor(t.type);
-            return `<option value="${escapeHTML(t.type)}"${t.type === active.type ? ' selected' : ''}>${emoji} ${escapeHTML(label)}</option>`;
+            return `<option value="${escapeHTML(t.type)}"${t.type === active.type ? ' selected' : ''}>${escapeHTML(emoji)} ${escapeHTML(label)}</option>`;
           }).join('')}
         </select>`
       : '';
@@ -23053,7 +23056,7 @@ const App = (() => {
     const avg = Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length);
 
     return `<div class="exercise-card vol-chart" style="margin-bottom:12px;">
-      <div class="ex-header">${cardTitleHTML(`${TITLE} — ${emoji} ${escapeHTML(label)}`, ASK)}${chartWindowControlHTML('heart-rate', 92)}</div>
+      <div class="ex-header">${cardTitleHTML(`${TITLE} — ${escapeHTML(emoji)} ${escapeHTML(label)}`, ASK)}${chartWindowControlHTML('heart-rate', 92)}</div>
       ${picker}
       ${chartFlagPickerHTML('heart-rate')}
       <div style="display:flex;gap:14px;font-size:var(--fs-micro);color:var(--t3);margin-top:6px;flex-wrap:wrap;">
@@ -24144,7 +24147,7 @@ const App = (() => {
         ${photo ? `${photoImgHTML(photo.ext, photo.name, 'thumb', 'cal-photo')}<div class="cal-photo-scrim"></div>` : ''}
         ${bw ? `<div class="cal-bw" title="${bw} lbs">${bw}</div>` : ''}
         <div class="cal-day-num">${dayNum}</div>
-        ${emojis.length ? `<div class="${emojiCls}">${emojis.join('')}</div>`
+        ${emojis.length ? `<div class="${emojiCls}">${emojis.map(escapeHTML).join('')}</div>`
           : isRest ? '<div class="cal-day-emoji">😴</div>'
           : plan   ? `<div class="cal-day-plan${plan.count >= 4 ? ' multi4' : plan.count === 3 ? ' multi3' : plan.count === 2 ? ' multi' : ''}">${plan.emojis.map(e => `<span>${escapeHTML(e)}</span>`).join('')}</div>` : ''}
         ${stat ? `<div class="cal-day-stat">${escapeHTML(stat)}</div>` : ''}
@@ -25467,19 +25470,19 @@ const App = (() => {
     </div>` : '';
 
     const gainRow = i => `<div class="day-detail-line" style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px;">
-      <span>${i.emoji} ${escapeHTML(i.label)}</span>
+      <span>${escapeHTML(i.emoji)} ${escapeHTML(i.label)}</span>
       <span style="white-space:nowrap;color:var(--t3);"><span${dayClickAttrs(i.date)}>${escapeHTML(i.from)} → <b style="color:var(--t1);">${escapeHTML(i.to)}</b></span> <span style="color:var(--brand-text);font-weight:700;">${escapeHTML(i.delta)}</span></span>
     </div>`;
 
     // The date routes through the same dayClickAttrs() the PRs tab's prRow()
     // uses, so tapping it opens that day.
     const recordRow = r => `<div class="day-detail-line" style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px;">
-      <span>${r.emoji} ${escapeHTML(r.label)}</span>
+      <span>${escapeHTML(r.emoji)} ${escapeHTML(r.label)}</span>
       <span style="white-space:nowrap;"><b style="color:var(--gold);">${escapeHTML(r.value)}</b> <span style="color:var(--t4);"><span${dayClickAttrs(r.date)}>${escapeHTML(shortDate(r.date))}</span></span></span>
     </div>`;
 
     const gapRow = g => `<div class="day-detail-line" style="margin-bottom:5px;color:var(--t3);">
-      ${g.emoji} ${escapeHTML(g.label)}
+      ${escapeHTML(g.emoji)} ${escapeHTML(g.label)}
       ${g.detail ? `<div style="font-size:var(--fs-micro);color:var(--t4);margin-left:18px;">${escapeHTML(g.detail)}</div>` : ''}
     </div>`;
 
@@ -25491,7 +25494,7 @@ const App = (() => {
     // Its layout lives on .standout-row because dayClickAttrs() brings a
     // style of its own, and a second style attribute is silently dropped.
     const standoutRowHTML = s => `<div class="day-detail-line standout-row"${dayClickAttrs(s.date)}>
-      <span>${s.emoji} ${escapeHTML(s.label)}${s.phrase ? ` <span style="color:var(--t4);">· ${escapeHTML(s.phrase)}</span>` : ''}</span>
+      <span>${escapeHTML(s.emoji)} ${escapeHTML(s.label)}${s.phrase ? ` <span style="color:var(--t4);">· ${escapeHTML(s.phrase)}</span>` : ''}</span>
       <span style="white-space:nowrap;"><b style="color:var(--t1);">${escapeHTML(s.value)}</b> <span style="color:var(--t4);">${escapeHTML(shortDate(s.date))}</span></span>
     </div>`;
 
@@ -27097,7 +27100,7 @@ const App = (() => {
     // with nothing marking where the first session ended.
     const workoutLines = gatherDayWorkouts(hit.date)
       .filter(w => w.type !== REST_TYPE.value)
-      .map(w => `<div class="throwback-line">${w.emoji} ${escapeHTML(w.title)}${
+      .map(w => `<div class="throwback-line">${escapeHTML(w.emoji)} ${escapeHTML(w.title)}${
         w.detail ? ` <span style="color:var(--t4);">· ${escapeHTML(w.detail)}</span>` : ''}</div>`)
       .join('');
 
@@ -28523,7 +28526,7 @@ const App = (() => {
     const h = historyCache.find(x => x.id === inj.history_id);
     if (!h) return '';
     const { emoji } = typeLabelEmoji(h.type || 'lift');
-    return `<span style="cursor:pointer;text-decoration:underline dotted;" onclick="event.stopPropagation();App.showDayDetailPopup('${jsArg(h.date)}')">from ${emoji} ${escapeHTML(sessionTitle(h))}, ${escapeHTML(displayDate(h.date))}</span>`;
+    return `<span style="cursor:pointer;text-decoration:underline dotted;" onclick="event.stopPropagation();App.showDayDetailPopup('${jsArg(h.date)}')">from ${escapeHTML(emoji)} ${escapeHTML(sessionTitle(h))}, ${escapeHTML(displayDate(h.date))}</span>`;
   }
 
   // Injuries whose window [started_date, resolved_date || today] covers
@@ -28778,7 +28781,7 @@ const App = (() => {
       <div class="flag-chip-row" style="margin-top:8px;">
         ${injuryFlagsFor(period, inj).map(f => `<button type="button" id="injchip-${period}-${inj.id}-${f.key}"
           class="flag-chip${st[f.key] ? ' selected' : ''}"
-          onclick="App.toggleInjuryFlag('${period}',${inj.id},'${f.key}')">${f.emoji} ${f.label}</button>`).join('')}
+          onclick="App.toggleInjuryFlag('${period}',${inj.id},'${f.key}')">${escapeHTML(f.emoji)} ${escapeHTML(f.label)}</button>`).join('')}
       </div>`;
 
     // The evening's two TALL fields fold behind one disclosure. This card is
@@ -29428,10 +29431,9 @@ const App = (() => {
         // restore is exactly the moment it goes stale. Dropped rather than
         // re-fetched: the map reloads it the next time that tab is opened,
         // and most restores are not followed by opening it.
-        activityRoutesCache = null;
-        routeSegmentsCache = null;
         mapSelectedId = null;
         mapSelectedSegId = null;
+        dropRouteCaches();
         renderDayContent();
         showToast('Backup restored ✓');
       } catch (err) { showToast(failMessage('restore the backup', err, 'Nothing was replaced, so try again.'), true); }
@@ -30392,6 +30394,18 @@ const App = (() => {
     return activityRoutesCache;
   }
 
+  // For a write the SERVER made behind these caches: a Garmin sync, a restore,
+  // a Health export import. Dropped rather than re-fetched, since most of
+  // those are not followed by opening the map. But a Map that is ON SCREEN is
+  // redrawn now: left alone it keeps the old routes, and the next chip tap or
+  // mode switch reads the emptied cache as "no routes" and blanks it.
+  function dropRouteCaches() {
+    activityRoutesCache = null;
+    routeSegmentsCache = null;
+    const onHistory = document.querySelector('.main-nav-btn.active')?.id === 'nav-history';
+    if (onHistory && document.getElementById('history-subview-map')?.style.display !== 'none') renderMapView();
+  }
+
   // Loaded beside the routes and kept the same way. A failure is an empty
   // list, not an error screen: the routes still draw, and the Segments mode
   // says it has none.
@@ -31103,7 +31117,7 @@ const App = (() => {
       const meta = typeLabelEmoji(t);
       const on = !mapTypeFilter || mapTypeFilter.has(t);
       return `<button type="button" class="map-chip${on ? ' active' : ''}" data-type="${escapeHTML(t)}"
-        onclick="App.toggleMapType('${jsArg(t)}')">${meta.emoji} ${escapeHTML(meta.label)} <span class="map-chip-count">${n}</span></button>`;
+        onclick="App.toggleMapType('${jsArg(t)}')">${escapeHTML(meta.emoji)} ${escapeHTML(meta.label)} <span class="map-chip-count">${n}</span></button>`;
     }).join('');
     return `<div class="map-menu-h">Time range</div>
         <div class="map-menu-ranges">${WINDOW_CHOICES.map(c => `<button type="button" class="map-mode-btn${c.days === days ? ' active' : ''}"
@@ -31130,7 +31144,7 @@ const App = (() => {
     // what it is, home or a trip, and its months go underneath: months as the
     // label read as a second time filter under Time range.
     const items = places.map((p, i) => item(i ? `App.fitMapPlace(${i})` : 'App.fitAllRoutes()',
-      i ? `${typeLabelEmoji(p.type).emoji} Trip` : '🏠 Home area',
+      i ? `${escapeHTML(typeLabelEmoji(p.type).emoji)} Trip` : '🏠 Home area',
       `${escapeHTML(placeMonths(p))}${i ? '' : ' · where most of these are'}`, p.routes.length));
     if (places.length > 1) items.push(item('App.fitMapPlace(-1)', '🌎 All', 'every route in the filter', shown.length));
     return `<div class="map-menu-h">Jump to a place</div>
@@ -31423,7 +31437,7 @@ const App = (() => {
       stat('RPE', h.rpe),
     ].join('') : '';
     const note = h && h.note ? String(h.note).trim().split('\n')[0] : '';
-    return mapOpenHTML(`${meta.emoji} ${escapeHTML((h && h.title) || meta.label)}`, displayDate(r.date), `
+    return mapOpenHTML(`${escapeHTML(meta.emoji)} ${escapeHTML((h && h.title) || meta.label)}`, displayDate(r.date), `
         ${stats ? `<div class="map-card-stats">${stats}</div>` : ''}
         ${workoutWeatherLineHTML(r)}
         ${h ? workoutSnowLineHTML(h) : ''}
@@ -31771,7 +31785,7 @@ const App = (() => {
         const meta = typeLabelEmoji(sg.type);
         return `<div class="map-routerow${sg.id === mapSelectedSegId ? ' active' : ''}" data-sid="${sg.id}"
                   onclick="App.selectSegment(${sg.id})">
-            <span class="mr-name">${meta.emoji} ${escapeHTML(sg.name)}</span>
+            <span class="mr-name">${escapeHTML(meta.emoji)} ${escapeHTML(sg.name)}</span>
             <span class="mr-meta">${[km(sg.length_m), `${all.length}×`,
               ranked.length ? `best ${formatClock(ranked[0].secs)}` : ''].filter(Boolean).join(' · ')}</span>
           </div>`;
@@ -31836,7 +31850,7 @@ const App = (() => {
         <span><b>${formatClock(e.secs)}</b> <span class="mc-sub">${i ? `+${formatClock(e.secs - ranked[0].secs)}` : pace(e.secs)}</span><span
           class="seg-day" onclick="event.stopPropagation(); App.showDayDetailPopup('${jsArg(e.route.date)}')">day →</span></span>
       </div>`).join('');
-    el.innerHTML = mapOpenHTML(`${meta.emoji} ${escapeHTML(sg.name)}`, `${(sg.length_m / 1000).toFixed(2)} km`, `
+    el.innerHTML = mapOpenHTML(`${escapeHTML(meta.emoji)} ${escapeHTML(sg.name)}`, `${(sg.length_m / 1000).toFixed(2)} km`, `
         <div class="map-card-stats" style="display:block;">${lines.join(' · ')}</div>
         ${chart}
         ${top ? `<div class="map-note">Tap a time to trace that outing on the map.</div><div class="seg-efforts">${top}</div>` : ''}
@@ -31928,7 +31942,7 @@ const App = (() => {
       return `<div class="map-routerow${r.external_id === mapSelectedId ? ' active' : ''}"
                 data-rid="${escapeHTML(String(r.external_id))}"
                 onclick="App.selectMapRoute('${jsArg(String(r.external_id))}')">
-        <span class="mr-name">${meta.emoji} ${displayDate(r.date)}${h && h.title
+        <span class="mr-name">${escapeHTML(meta.emoji)} ${displayDate(r.date)}${h && h.title
           ? ` <span class="mr-title">· ${escapeHTML(h.title)}</span>` : ''}</span>
         <span class="mr-meta">${[dist, dur].filter(Boolean).join(' · ')}</span>
       </div>`;
@@ -32054,8 +32068,13 @@ const App = (() => {
   // otherwise hide an older or filtered-out outing behind a blank map, so they
   // are widened for it.
   async function openActivityRoute(externalId) {
+    const find = () => (activityRoutesCache || []).find(x => String(x.external_id) === String(externalId));
     await loadActivityRoutes();
-    const r = (activityRoutesCache || []).find(x => String(x.external_id) === String(externalId));
+    // A miss may only mean the cache predates the route: the nightly sync or
+    // another device stored it after this page loaded. One fresh look before
+    // saying there is none.
+    if (!find() && !routesLoadFailed) await loadActivityRoutes(true);
+    const r = find();
     if (!r) {
       if (routesLoadFailed) showToast("Couldn't load your routes. Try again in a moment.", true);
       else showToast('No GPS route was recorded for this workout');
@@ -33185,7 +33204,7 @@ const App = (() => {
     return `<div class="exercise-row" style="display:block;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <div style="font-size:var(--fs-body);flex:1;min-width:0;">
-          <strong>${u.emoji || '👤'} ${escapeHTML(u.name)}</strong>
+          <strong>${escapeHTML(u.emoji || '👤')} ${escapeHTML(u.name)}</strong>
           ${me ? ' <span style="color:var(--brand-text);font-size:var(--fs-caption);">· you</span>' : ''}
           ${u.archived ? ' <span style="color:var(--t3);font-size:var(--fs-caption);">· archived</span>' : ''}
           ${u.id === 1 ? '<div style="color:var(--t4);font-size:var(--fs-caption);">The main account — it can\'t be archived.</div>' : ''}
@@ -33482,8 +33501,7 @@ const App = (() => {
       appleExportWatching = false;
       if (s?.last?.ok) {
         await refreshDataSilently();
-        activityRoutesCache = null;
-        routeSegmentsCache = null;
+        dropRouteCaches();
         showToast('📱 Health export imported');
       }
     }
@@ -33589,6 +33607,9 @@ const App = (() => {
         // loggable until a page reload.
         applyRoutinesToTypes();
         buildPRMap();
+        // The sync stores each new outing's route too (garmin_sync.py
+        // sync_routes), behind the route cache.
+        dropRouteCaches();
         // The server wrote these rows, so api's write hook never saw them.
         scheduleGoalAchievementCheck();
         renderWeekStrip();
@@ -33813,7 +33834,7 @@ const App = (() => {
     // and leaving it behind would make the next load take the dead path again.
     if (stored) localStorage.removeItem(ACTIVE_USER_KEY);
     document.getElementById('user-gate-list').innerHTML = choosable.map(u => `
-      <button class="user-gate-btn" onclick="App.chooseUser(${u.id})">${u.emoji} ${escapeHTML(u.name)}</button>
+      <button class="user-gate-btn" onclick="App.chooseUser(${u.id})">${escapeHTML(u.emoji)} ${escapeHTML(u.name)}</button>
     `).join('');
     document.getElementById('app-loading').style.display = 'none';
     document.getElementById('user-gate').style.display = 'block';
